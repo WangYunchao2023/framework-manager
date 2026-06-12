@@ -763,15 +763,15 @@ def idle_reset_worker():
                 continue
 
             if _check_has_queued_tasks():
+                # 有任务在执行：重置活动时间为现在，防止超时误触发
                 last_activity_time = time.time()
                 continue
 
+            # 注意：以下两个检查只决定本次循环是否触发回退，
+            # 不再重置 last_activity_time（偶发 GPU/服务探测波动不应覆盖真实空闲时长）
             if not _check_gpu_idle():
-                last_activity_time = time.time()
                 continue
-
             if _check_engine_active():
-                last_activity_time = time.time()
                 continue
 
             norm_current_model = _normalize_model_name(current_model or "")

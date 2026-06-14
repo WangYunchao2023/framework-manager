@@ -4,9 +4,18 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.0.0
+版本：1.0.2
 
 更新日志:
+- v1.0.2: 修复 OOM 根因 (beellama 并行 4 + 128K 必爆 VRAM) + 修 ollama 永久驻留
+  - beellama-wrapper.sh: 4 个 case 的 CTX/PARALLEL 改为按模型差异化推荐值
+    qwen3-14b: 131K+4 → 64K+2
+    gemma-4-26b: 131K+4 → 64K+1
+    qwen3-vl-8b: 131K+4 → 128K+2
+    qwen3.6-35b: 131K+4 → 128K+1
+  - ollama.service.d/override.conf: KEEP_ALIVE=-1 → 10m, NUM_PARALLEL=2 → 1, CONTEXT_LENGTH=98304 → 32768
+  - 彻底消除 "connected| error" 错误 (beellama 端 OOM) 和 idle 回退失效 (ollama 端永久驻留)
+- v1.0.1: 修复空闲回退失效 (_check_gpu_idle/_check_engine_active 误重置 last_activity_time)
 - v1.0.0: 初始正式版本。Ollama/Beellama/ComfyUI 框架切换，模型热切换，
   空闲超时自动回退默认设置，操作日志审计与 Web UI 显示，队列监控
 """

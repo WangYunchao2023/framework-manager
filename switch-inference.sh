@@ -2,9 +2,17 @@
 # switch-inference.sh — Ollama ↔ beellama 推理引擎切换
 # beellama = Anbeeld fork (llama.cpp 9459) — DFlash 推测解码 + TurboQuant
 #
-# 版本：1.0.2
+# 版本：1.0.3
 #
 # 更新日志:
+# - v1.0.3: ollama 端 num_ctx 改为 per-model Modelfile 配置
+#   移除 systemd override.conf 的 OLLAMA_CONTEXT_LENGTH 全局 32K
+#   5 个常驻模型各有独立 num_ctx (对齐 beellama 端配置):
+#     bge-m3:8K, qwen3:14b-64K, gemma4:26b-64K, qwen3.6-q3:128K, qwen3-vl:128K
+#   Modelfile: /data/ollama/models/modelfiles/*.Modelfile
+#   新 tag: bge-m3:ctx8k / qwen3:14b-ctx64k / gemma4:26b-ctx64k
+#          / qwen3.6-q3:ctx128k / qwen3-vl:ctx128k
+#   override.conf 仍保留: OLLAMA_KEEP_ALIVE=10m, OLLAMA_NUM_PARALLEL=1
 # - v1.0.2: 与 framework-manager.py v1.0.2 同步发布
 #   ollama 端参数 (ctx/parallel/keep_alive) 由 systemd override.conf 控制
 #   beellama 端参数 (ctx/parallel) 由 beellama-wrapper.sh 控制
@@ -44,6 +52,16 @@ MODELS=(
 
 # beellama 可切换的模型
 BEELLAMA_MODELS=("qwen3.6-q3" "qwen3-vl" "gemma4" "qwen3-14b")
+
+# v1.0.3: ollama 端 per-model tag (num_ctx 已固化在 Modelfile)
+# 切换 ollama 端模型时优先用这些 tag (如: ollama run qwen3.6-q3:ctx128k)
+OLLAMA_TAGS=(
+  "bge-m3:ctx8k"
+  "qwen3:14b-ctx64k"
+  "gemma4:26b-ctx64k"
+  "qwen3.6-q3:ctx128k"
+  "qwen3-vl:ctx128k"
+)
 
 status() {
   local ollama_pid=$(pgrep -x ollama 2>/dev/null || echo "0")
@@ -88,6 +106,11 @@ list() {
   for m in "${MODELS[@]}"; do
     IFS='|' read -r key desc path size vram <<< "$m"
     printf "  %-15s %-25s %-8s %-8s\n" "$key" "$desc" "$size" "$vram"
+  done
+  echo ""
+  echo "Ollama 端推荐 tag (v1.0.3 per-model num_ctx):"
+  for t in "${OLLAMA_TAGS[@]}"; do
+    echo "  $t"
   done
   echo ""
   echo "DFlash 建议:"
@@ -140,7 +163,7 @@ switch_to_beellama() {
   if [ "$is_beellama_model" != "true" ]; then
     echo "❌ $model_key 不支持 beellama"
     echo "   Beellama 可用模型: ${BEELLAMA_MODELS[*]}"
-    echo "   Ollama native: ollama run qwen3.6-q3:latest（请用 switch-inference.sh ollama）"
+    echo "   Ollama native: ollama run qwen3.6-q3:ctx128k（请用 switch-inference.sh ollama）"
     exit 1
   fi
 

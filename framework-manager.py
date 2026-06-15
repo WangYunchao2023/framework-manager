@@ -4,9 +4,21 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.0.2
+版本：1.0.3
 
 更新日志:
+- v1.0.3: ollama 端 num_ctx 改为 per-model Modelfile 配置 (对齐 beellama 端)
+  - 新建 5 个 Modelfile (/data/ollama/models/modelfiles/), 用 ollama create 建立独立 tag:
+      bge-m3:ctx8k         (8K,  embedding 够用)
+      qwen3:14b-ctx64k     (64K, 对齐 beellama qwen3-14b)
+      gemma4:26b-ctx64k    (64K, 对齐 beellama gemma4)
+      qwen3.6-q3:ctx128k   (128K, 对齐 beellama qwen3.6-q3)
+      qwen3-vl:ctx128k     (128K, 对齐 beellama qwen3-vl)
+  - systemd override.conf: 删除 OLLAMA_CONTEXT_LENGTH=32768 全局 32K 设置
+    保留 OLLAMA_KEEP_ALIVE=10m, OLLAMA_NUM_PARALLEL=1
+  - switch-inference.sh: OLLAMA_TAGS 列表 + list() 显示; 默认 tag 引用改为新 tag
+  - 效果: 轻量模型 (qwen3-14b 9GB) 不再被 32K 全局值限制; 各模型 num_ctx 与 beellama 完全对齐
+  - 兼容性: 原 tag (qwen3:14b, gemma4:26b 等) 仍保留, 不影响现有调用
 - v1.0.2: 修复 OOM 根因 (beellama 并行 4 + 128K 必爆 VRAM) + 修 ollama 永久驻留
   - beellama-wrapper.sh: 4 个 case 的 CTX/PARALLEL 改为按模型差异化推荐值
     qwen3-14b: 131K+4 → 64K+2

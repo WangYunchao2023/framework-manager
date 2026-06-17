@@ -4,9 +4,38 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.0.3
+版本：1.1.3
 
 更新日志:
+- v1.1.3: 移除"应用推荐"功能 + 简化推荐/默认值体系
+  - 需求: 统一默认值与推荐值，移除独立的"应用推荐"按钮
+  - WebUI: 删除"✨ 应用推荐"按钮 + 推荐配置预览 + "应用推荐 = 最优配置"提示
+  - API: 删除 /api/recommended_defaults (GET) 和 /api/apply_recommended (POST)
+  - Python: 删除 RECOMMENDED_MODEL_DEFAULTS 字典 (原 qwen3.6-q3/qwen3-14b/gemma-4-26b/qwen3-vl 推荐值)
+  - 逻辑: 加载模型时不再自动初始化为推荐值 — per-model 配置完全由用户手动维护
+  - 后续: wrapper 默认值已对齐原推荐值, 唯一区别 qwen3-14b: PARALLEL 4→2
+  - 未知模型处理由 wrapper 负责 (报错退出 + 提示用户去 WebUI 手动配置)
+- v1.1.1: 模型专属参数卡片保存/重置期间显示进度遮罩
+  - CSS: 新增 .processing-overlay (半透明遮罩 + spinner)
+  - JS: saveInProgress 标志防止 refresh() 在保存期间隐藏卡片
+  - UX 优化: 用户看到连续的"保存中..."状态, 无视觉断点
+- v1.1.0: beellama 高级参数配置 (KV 量化/FlashAttn/Reasoning + per-model ctx/parallel/ngl)
+  - Web UI 新增"⚙️ beellama 参数设置"卡片 (KV Cache 量化/Flash Attn/Reasoning)
+  - Web UI 新增"📦 模型专属参数"卡片 (加载模型后自动显示)
+  - 端点 /api/save_and_apply_model_params: 保存→重启→重载全自动 (一个端点完成)
+  - beellama-wrapper: 智能短别名映射 (basename ↔ qwen3.6-q3), 优先匹配配置文件
+  - 配置结构升级: framework_params.beellama = {global: {...}, models: {name: {...}}}
+- v1.0.4: beellama 端 KV cache 放回 VRAM (turbo3 量化) + 并发/ctx 全面提升
+  - beellama-wrapper.sh: 删 --no-kv-offload，KV 从 CPU 内存 → GPU VRAM
+  - 并发/ctx 提档 (配合 turbo3 1-2GB/parallel):
+      qwen3-14b:    64K+2   → 128K+4   (~13 GB)
+      gemma-4-26b:  64K+1   → 128K+1   (~17 GB)
+      qwen3-vl-8b:  128K+2  → 128K+4   (~10 GB)
+      qwen3.6-35b:  128K+1  → 128K+2   (~20 GB 临界)
+  - turbo3 默认启用 (switch-inference.sh 默认 turbo_level=3)
+  - 收益: 推理速度提升 (KV 在 GPU 比 CPU 快 5-10x), 释放 CPU RAM
+  - 质量: turbo3 3-bit KV 精度损失可忽略
+  - 回退: wrapper 改回 --no-kv-offload + ctx/parallel 恢复 v1.0.2 值
 - v1.0.3: ollama 端 num_ctx 改为 per-model Modelfile 配置 (对齐 beellama 端)
   - 新建 5 个 Modelfile (/data/ollama/models/modelfiles/), 用 ollama create 建立独立 tag:
       bge-m3:ctx8k         (8K,  embedding 够用)
@@ -72,6 +101,18 @@ DEFAULT_CONFIG = {
     "default_framework": "beellama",
     "default_model": "",
     "idle_timeout": 300,
+    "framework_params": {
+        "beellama": {
+            "global": {
+                "turbo_level": "",
+                "flash_attn": True,
+                "reasoning_off": True
+            },
+            "models": {}
+        },
+        "ollama": {},
+        "comfyui": {}
+    }
 }
 
 # ── 全局状态 ───────────────────────────────────────────────────────
@@ -91,6 +132,9 @@ _loading_state = {
     "message": "",
     "progress": 0,          # 0-100
 }
+
+# 待自动加载的模型（用户保存参数/恢复默认值时设置，beellama 重启后自动加载）
+_pending_model = None
 
 # ── 辅助函数 ───────────────────────────────────────────────────────
 def load_config():
@@ -147,8 +191,12 @@ def get_ollama_models():
     except Exception:
         pass
     # ollama 未运行时的 fallback：扫描本地已下载的模型 manifest
+    # 只列出原始 tag，跳过衍生 tag（如 -ctx64k、ctx128k），避免重复
+    # 衍生 tag 的 manifest 中 layers[].from 指向本地同目录下的另一个 tag
+    # Hub 原始 tag 的 latest 指向 Ollama Hub 原始名称，不算本地衍生
     try:
         manifests = []
+        seen_bases = set()
         for base in [Path.home() / ".local/share/ollama/models/manifests/registry.ollama.ai/library",
                      Path("/data/ollama/models/manifests/registry.ollama.ai/library")]:
             if not base.exists():
@@ -161,9 +209,34 @@ def get_ollama_models():
                         continue
                     tag = tag_file.name
                     name = model_dir.name if tag == "latest" else f"{model_dir.name}:{tag}"
-                    if not name.lower().startswith('bge'):
+                    if name.lower().startswith('bge'):
+                        continue
+                    # 跳过衍生 tag：layers 中有 from 字段且 from 指向本地同目录下的 tag（排除自身）
+                    # 原始 tag 的 from 可能指向自身（如 gemma4:26b 的 from="gemma4:26b"），不算衍生
+                    try:
+                        manifest_data = json.loads(tag_file.read_text())
+                        is_derivative = False
+                        for layer in manifest_data.get("layers", []):
+                            src = layer.get("from", "")
+                            if src and src != name:
+                                # 解析 src 的 tag 部分（格式：model_dir_name:tag）
+                                if ":" in src:
+                                    src_tag = src.split(":", 1)[1]
+                                else:
+                                    src_tag = src
+                                # 如果 from 指向同目录下的另一个 tag，则为衍生
+                                if src_tag in [tf.name for tf in model_dir.iterdir() if tf.is_file()]:
+                                    is_derivative = True
+                                    break
+                        if is_derivative:
+                            continue
+                    except Exception:
+                        pass
+                    base_key = model_dir.name
+                    if base_key not in seen_bases:
+                        seen_bases.add(base_key)
                         manifests.append(name)
-        return sorted(set(manifests))
+        return sorted(manifests)
     except Exception:
         return []
 def unload_ollama_models():
@@ -187,29 +260,38 @@ def unload_ollama_models():
         log.warning(f"卸载模型失败: {e}")
 
 def get_beellama_models():
-    """扫描 beellama 模型目录，支持多个可能的位置"""
+    """扫描 beellama 模型目录，支持多个可能的位置
+    v1.0.9: 修复重复扫描导致 8 个模型变 4 个的问题
+    """
     possible_dirs = [
         Path.home() / "models" / "beellama",
         Path.home() / "models",  # 也可能直接在 ~/models 下
         Path("/data/ollama/models/blobs"),  # Ollama blob 目录备用
     ]
-    models = []
+    models = set()
+    seen_paths = set()  # 用绝对路径去重（避免 ~/models vs ~/models/beellama 重复）
     for model_dir in possible_dirs:
         if not model_dir.exists():
             continue
         # 扫描 GGUF 文件
         for gguf in model_dir.rglob("*.gguf"):
-            if gguf.is_file():
-                # 跳过 mmproj 视觉投影文件（不是可加载的 LLM 模型）
-                if 'mmproj' in gguf.name.lower():
-                    continue
-                # 使用相对路径作为模型标识
-                try:
-                    rel_path = gguf.relative_to(model_dir)
-                    models.append(str(rel_path))
-                except ValueError:
-                    models.append(gguf.name)
-    return sorted(set(models))
+            if not gguf.is_file():
+                continue
+            # 跳过 mmproj 视觉投影文件（不是可加载的 LLM 模型）
+            if 'mmproj' in gguf.name.lower():
+                continue
+            # 用绝对路径去重
+            abs_path = str(gguf.resolve())
+            if abs_path in seen_paths:
+                continue
+            seen_paths.add(abs_path)
+            # 使用相对路径作为模型标识
+            try:
+                rel_path = gguf.relative_to(model_dir)
+                models.add(str(rel_path))
+            except ValueError:
+                models.add(gguf.name)
+    return sorted(models)
 
 def get_comfyui_models():
     """扫描 ComfyUI 模型，支持子目录和多种模型类型"""
@@ -585,7 +667,21 @@ def load_model_for_framework(model_name):
 
     # ── Beellama: 调用 switch-inference.sh ──────────────────────────
     elif current_framework == "beellama":
-        if model_name not in models:
+        # 检查模型名是否在列表中（兼容短别名 qwen3.6-q3 / 完整路径 / basename）
+        model_matched = model_name in models
+        if not model_matched:
+            # 别名匹配: qwen3.6-q3 ↔ qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf
+            alias_map = {
+                'qwen3.6-q3': 'qwen3.6-35b',
+                'qwen3-vl': 'qwen3-vl',
+                'gemma4': 'gemma-4-26b',
+            }
+            alias_key = alias_map.get(model_name, model_name)
+            for m in models:
+                if alias_key.lower() in m.lower():
+                    model_matched = True
+                    break
+        if not model_matched:
             _loading_state.update({"status": "error", "message": f"模型 {model_name} 不可用", "progress": 0})
             return False, f"模型 {model_name} 在当前框架 {current_framework} 中不可用"
 
@@ -646,6 +742,8 @@ def load_model_for_framework(model_name):
 
     _loading_state.update({"status": "error", "message": "未知框架", "progress": 0})
     return False, "未知框架"
+
+
 
 def _write_beella_none_flag():
     """向 /tmp/beella_model 写入 NONE 标记，使 beellama-wrapper 仅激活不加载模型"""
@@ -942,10 +1040,39 @@ def api_load_model():
     if not model:
         _loading_state.update({"status": "error", "message": "未指定模型", "model": None, "progress": 0})
         return jsonify({"error": "未指定模型"}), 400
+
     ok, msg = load_model_for_framework(model)
     if ok:
         return jsonify({"status": "ok", "message": msg})
     return jsonify({"error": msg}), 400
+
+
+def _extract_short_model_name(model_path):
+    """从完整路径提取短别名 (用于 framework_params.beellama.models 的 key)
+    qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf -> qwen3.6-q3
+    qwen3-14b/qwen3-14b-q4.gguf -> qwen3-14b
+    gemma-4-26B-A4B-it-UD-Q4_K_M -> gemma-4-26b
+    """
+    import re
+    # 取 basename (去掉 .gguf)
+    basename = model_path.split("/")[-1].replace(".gguf", "")
+    # Qwen_Qwen3.6-35B-A3B-Q3_K_M -> qwen3.6-q3
+    m = re.match(r"Qwen_Qwen([0-9.]+)-([0-9]+B)-A([0-9]+B)", basename)
+    if m:
+        return f"qwen{m.group(1)}-q{m.group(2)[0].lower()}"
+    # qwen3-vl-8b -> qwen3-vl
+    m = re.match(r"(qwen[0-9.]+-vl)-", basename)
+    if m:
+        return m.group(1)
+    # qwen3-14b-q4 -> qwen3-14b
+    m = re.match(r"(qwen[0-9.]+(?:-[0-9]+b)?)-q[0-9]", basename)
+    if m:
+        return m.group(1)
+    # gemma-4-26B-... -> gemma-4-26b
+    m = re.match(r"gemma-?([0-9]+)-?([0-9]+b)", basename.lower())
+    if m:
+        return f"gemma-{m.group(1)}-{m.group(2)}"
+    return basename
 
 @app.route("/api/stop_all", methods=["POST"])
 def api_stop_all():
@@ -978,6 +1105,158 @@ def api_set_default_config():
         return jsonify({"error": "空闲超时必须是非负整数"}), 400
     save_config(config)
     return jsonify({"status": "ok", "config": config})
+
+@app.route("/api/beellama_params", methods=["GET"])
+def api_get_beellama_params():
+    """获取 beellama 框架参数设置"""
+    config = load_config()
+    params = config.get("framework_params", {}).get("beellama", {})
+    return jsonify({
+        "turbo_level": params.get("turbo_level", ""),
+        "flash_attn": params.get("flash_attn", True),
+        "reasoning_off": params.get("reasoning_off", True)
+    })
+
+@app.route("/api/beellama_params", methods=["POST"])
+def api_set_beellama_params():
+    """设置 beellama 全局参数"""
+    if current_framework != "beellama":
+        return jsonify({"error": "当前不是 beellama 框架"}), 400
+    data = request.get_json(silent=True) or {}
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "beellama" not in config["framework_params"]:
+        config["framework_params"]["beellama"] = {"global": {}, "models": {}}
+    if "global" not in config["framework_params"]["beellama"]:
+        config["framework_params"]["beellama"]["global"] = {}
+    # 更新全局参数
+    if "turbo_level" in data:
+        config["framework_params"]["beellama"]["global"]["turbo_level"] = data["turbo_level"]
+    if "flash_attn" in data:
+        config["framework_params"]["beellama"]["global"]["flash_attn"] = bool(data["flash_attn"])
+    if "reasoning_off" in data:
+        config["framework_params"]["beellama"]["global"]["reasoning_off"] = bool(data["reasoning_off"])
+    save_config(config)
+    audit_log("设置 beellama 全局参数", f"turbo={data.get('turbo_level', '')}, fa={data.get('flash_attn')}, reasoning={data.get('reasoning_off')}", "ok")
+    return jsonify({"status": "ok", "params": config["framework_params"]["beellama"]["global"]})
+
+@app.route("/api/beellama_model_params", methods=["GET"])
+def api_get_beellama_model_params():
+    """获取当前加载模型的专属参数"""
+    if current_framework != "beellama" or not current_model:
+        return jsonify({"error": "未加载 beellama 模型"}), 400
+    config = load_config()
+    model_params = config.get("framework_params", {}).get("beellama", {}).get("models", {}).get(current_model, {})
+    return jsonify({
+        "model": current_model,
+        "ctx_size": model_params.get("ctx_size", None),
+        "parallel": model_params.get("parallel", None),
+        "ngpu_layers": model_params.get("ngpu_layers", None)
+    })
+
+@app.route("/api/beellama_model_params", methods=["POST"])
+def api_set_beellama_model_params():
+    """设置当前加载模型的专属参数"""
+    if current_framework != "beellama":
+        return jsonify({"error": "当前不是 beellama 框架"}), 400
+    data = request.get_json(silent=True) or {}
+    # 优先使用前端传入的 model 名（避免状态不同步）
+    model_name = data.get("model") or current_model
+    if not model_name:
+        return jsonify({"error": "未指定模型名"}), 400
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "beellama" not in config["framework_params"]:
+        config["framework_params"]["beellama"] = {"global": {}, "models": {}}
+    if "models" not in config["framework_params"]["beellama"]:
+        config["framework_params"]["beellama"]["models"] = {}
+    if model_name not in config["framework_params"]["beellama"]["models"]:
+        config["framework_params"]["beellama"]["models"][model_name] = {}
+    # 更新模型专属参数
+    if "ctx_size" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["ctx_size"] = int(data["ctx_size"]) if data["ctx_size"] else None
+    if "parallel" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["parallel"] = int(data["parallel"]) if data["parallel"] else None
+    if "ngpu_layers" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["ngpu_layers"] = int(data["ngpu_layers"]) if data["ngpu_layers"] else None
+    save_config(config)
+    audit_log("设置 beellama 模型参数", f"model={model_name}, ctx={data.get('ctx_size')}, parallel={data.get('parallel')}, ngl={data.get('ngpu_layers')}", "ok")
+    return jsonify({"status": "ok", "model": model_name, "params": config["framework_params"]["beellama"]["models"][model_name]})
+
+@app.route("/api/set_pending_model", methods=["POST"])
+def api_set_pending_model():
+    """设置 beellama 重启后自动加载的模型"""
+    global _pending_model
+    data = request.get_json(silent=True) or {}
+    _pending_model = data.get("model") or None
+    return jsonify({"status": "ok", "pending_model": _pending_model})
+
+@app.route("/api/save_and_apply_model_params", methods=["POST"])
+def api_save_and_apply_model_params():
+    """保存模型参数 → 停止 beellama → 启动 beellama (用新参数) → 自动加载原模型
+    同步执行，避免 Timer 引发的 500 错误
+    """
+    global current_model, current_framework
+    if current_framework != "beellama":
+        return jsonify({"error": "当前不是 beellama 框架"}), 400
+    
+    data = request.get_json(silent=True) or {}
+    model_name = data.get("model") or current_model
+    if not model_name:
+        return jsonify({"error": "未指定模型"}), 400
+    
+    # 1) 保存参数
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "beellama" not in config["framework_params"]:
+        config["framework_params"]["beellama"] = {"global": {}, "models": {}}
+    if "models" not in config["framework_params"]["beellama"]:
+        config["framework_params"]["beellama"]["models"] = {}
+    if model_name not in config["framework_params"]["beellama"]["models"]:
+        config["framework_params"]["beellama"]["models"][model_name] = {}
+    if "ctx_size" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["ctx_size"] = int(data["ctx_size"]) if data["ctx_size"] else None
+    if "parallel" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["parallel"] = int(data["parallel"]) if data["parallel"] else None
+    if "ngpu_layers" in data:
+        config["framework_params"]["beellama"]["models"][model_name]["ngpu_layers"] = int(data["ngpu_layers"]) if data["ngpu_layers"] else None
+    save_config(config)
+    audit_log("保存并应用参数", f"model={model_name}, ctx={data.get('ctx_size')}, parallel={data.get('parallel')}, ngl={data.get('ngpu_layers')}", "ok")
+    
+    # 2) 停止 beellama
+    stop_service(BEELLAMA_SERVICE)
+    run_cmd("kill -9 $(pgrep llama-server 2>/dev/null) 2>/dev/null; true", timeout=3)
+    run_cmd("pkill -9 -f 'beellama-wrapper' 2>/dev/null; true", timeout=3)
+    time.sleep(2)
+    
+    # 3) 写入 NONE flag (让 wrapper 启动但不自动加载模型)
+    _write_beella_none_flag()
+    
+    # 4) 启动 beellama
+    success = start_service(BEELLAMA_SERVICE)
+    if not success:
+        return jsonify({"error": "beellama 启动失败"}), 500
+    
+    # 5) 同步加载模型
+    ok, msg = load_model_for_framework(model_name)
+    if ok:
+        current_model = model_name
+        audit_log("自动重载", f"model={model_name}", "ok")
+        return jsonify({
+            "status": "ok",
+            "model": model_name,
+            "params": config["framework_params"]["beellama"]["models"][model_name],
+            "message": f"已应用新参数并加载 {model_name}"
+        })
+    else:
+        return jsonify({
+            "status": "partial",
+            "error": f"beellama 已启动但模型加载失败: {msg}",
+            "params": config["framework_params"]["beellama"]["models"][model_name]
+        }), 500
 
 @app.route("/api/models_by_framework")
 def api_models_by_framework():
@@ -1112,6 +1391,9 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 .vram-fill.high{background:var(--red)}
 .inline-code{font-family:monospace;background:#21262d;padding:1px 6px;border-radius:3px;font-size:0.82rem}
 .footer{text-align:center;color:var(--text-dim);font-size:0.75rem;margin-top:30px;display:flex;justify-content:space-between;align-items:center}
+.processing-overlay{position:absolute;inset:0;background:rgba(13,17,23,0.85);display:flex;align-items:center;justify-content:center;gap:12px;border-radius:8px;font-size:0.9rem;color:var(--accent);font-weight:500;z-index:10}
+.processing-overlay .spin{width:18px;height:18px;border-width:2px}
+.relative-card{position:relative}
 @media(max-width:600px){.status-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -1135,6 +1417,87 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <button class="btn" onclick="switchFramework('comfyui')" id="btn-comfyui"><span>🟨</span> 切换到 ComfyUI</button>
 <button class="btn danger" onclick="stopAllEngines()" id="btn-stop-all"><span>🛑</span> 停止所有框架</button>
 </div>
+</div>
+<!-- ⚙️ beellama 参数设置 (仅当切换到 beellama 时显示) -->
+<div class="card" id="beellama-params-card" style="display:none;">
+<h2>⚙️ beellama 参数设置</h2>
+<div class="form-row">
+  <div class="form-group">
+    <label>KV Cache 量化</label>
+    <select id="beellama-turbo-level" style="min-width:150px;">
+      <option value="">f16 (16-bit, 完整精度)</option>
+      <option value="q8_0">q8_0 (8-bit, 折中)</option>
+      <option value="4">turbo4 (4-bit)</option>
+      <option value="3">turbo3 (3-bit, 推荐)</option>
+      <option value="2">turbo2 (2-bit)</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>Flash Attention</label>
+    <select id="beellama-flash-attn" style="min-width:120px;">
+      <option value="true">开启</option>
+      <option value="false">关闭</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>Reasoning 输出</label>
+    <select id="beellama-reasoning-off" style="min-width:120px;">
+      <option value="true">关闭 (合并到 content)</option>
+      <option value="false">开启 (分离到 reasoning_content)</option>
+    </select>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn success" onclick="saveBeellamaParams()" id="btn-save-beellama-params">💾 保存并重启 beellama</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>turbo3</b>: 速度快/功耗低 (~100W)，但长对话可能乱码 · <b>f16</b>: 稳定不乱码/功耗高 (~200W) · 修改后需重启 beellama
+</p>
+</div>
+<!-- 📦 模型专属参数卡片 (加载模型后显示) -->
+<div class="card relative-card" id="beellama-model-params-card" style="display:none;">
+<h2>📦 模型专属参数：<span id="model-params-model-name"></span></h2>
+<div id="model-params-overlay" class="processing-overlay" style="display:none;">
+  <div class="spin"></div>
+  <span id="model-params-overlay-text">正在重启 beellama 并重载模型...</span>
+</div>
+<div class="form-row">
+  <div class="form-group">
+    <label>上下文宽度</label>
+    <select id="model-ctx-size" style="min-width:150px;">
+      <option value="">使用 wrapper 默认</option>
+      <option value="8192">8K (省显存)</option>
+      <option value="32768">32K</option>
+      <option value="65536">64K</option>
+      <option value="131072">128K ⭐推荐</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>并发数</label>
+    <select id="model-parallel" style="min-width:120px;">
+      <option value="">使用 wrapper 默认</option>
+      <option value="1">1 (单用户) ⭐推荐</option>
+      <option value="2">2 (默认)</option>
+      <option value="4">4 (多用户)</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>GPU 层数 (-ngl)</label>
+    <select id="model-ngpu-layers" style="min-width:120px;">
+      <option value="">使用默认值</option>
+      <option value="0">0 (纯 CPU)</option>
+      <option value="60">60 (平衡)</option>
+      <option value="99">99 (全 GPU)</option>
+    </select>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn" onclick="resetModelParams()" id="btn-reset-model-params">🔄 恢复默认值</button>
+    <button class="btn success" onclick="saveModelParams()" id="btn-save-model-params">💾 保存模型参数</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 留空表示使用 wrapper 硬编码默认
+</p>
 </div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
@@ -1205,6 +1568,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <script>
 var currentFramework = null;
 var currentModel = null;
+var saveInProgress = false;  // 保存/重置模型参数期间为 true, 防止卡片被 refresh() 隐藏
 var isSwitching = false;
 async function fetchJSON(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -1228,6 +1592,12 @@ async function refresh() {
     else document.getElementById('sv-framework').style.color = 'var(--text-dim)';
     document.getElementById('sv-pid').textContent = data.pid || '—';
     document.getElementById('sv-model').textContent = data.model || '—';
+    // ⚙️ 同步 JS 全局 currentModel，供 loadModelParams() 使用
+    if (data.model && data.model !== '—' && data.model !== '\u2014') {
+      currentModel = data.model;
+    } else {
+      currentModel = null;
+    }
     document.getElementById('sv-vram').textContent = (data.vram_used_mb/1024).toFixed(0) + ' / ' + (data.vram_total_mb/1024).toFixed(0) + ' GB (' + data.vram_percent + '%)';
     const bar = document.getElementById('vram-bar');
     bar.style.width = data.vram_percent + '%';
@@ -1236,6 +1606,27 @@ async function refresh() {
       var btn = document.getElementById('btn-' + f);
       if (btn) btn.disabled = (isSwitching || fw === f);
     });
+    // ⚙️ 显示/隐藏 beellama 参数卡片
+    var paramsCard = document.getElementById('beellama-params-card');
+    if (paramsCard) {
+      if (fw === 'beellama') {
+        paramsCard.style.display = 'block';
+        loadBeellamaParams();
+      } else {
+        paramsCard.style.display = 'none';
+      }
+    }
+    // 📦 模型专属参数卡片：仅当加载了 beellama 模型时显示（保存中保持可见）
+    var modelParamsCard = document.getElementById('beellama-model-params-card');
+    if (modelParamsCard) {
+      if (fw === 'beellama' && currentModel) {
+        modelParamsCard.style.display = 'block';
+        loadModelParams();
+      } else if (!saveInProgress) {
+        // 保存/重置中保持卡片可见，避免视觉断点
+        modelParamsCard.style.display = 'none';
+      }
+    }
     document.getElementById('queue-length').textContent = (data.queue.total || 0) + ' 任务';
     // 更新队列详情
     const queueDetails = document.getElementById('queue-details');
@@ -1529,6 +1920,169 @@ async function pullAuditLogs() {
 refresh();
 setInterval(refresh, 5000);
 setInterval(pullAuditLogs, 10000);
+
+// ⚙️ 防呆：每 10 秒检查 isSwitching 是否卡住
+setInterval(function() {
+  if (isSwitching) {
+    console.warn('⚠️ isSwitching 卡住，自动重置');
+    isSwitching = false;
+    // 恢复按钮
+    ['ollama','beellama','comfyui'].forEach(function(f) {
+      var btn = document.getElementById('btn-' + f);
+      if (btn) btn.disabled = false;
+    });
+  }
+}, 10000);
+
+// ⚙️ beellama 参数管理
+async function loadBeellamaParams() {
+  try {
+    const data = await fetchJSON('/api/beellama_params');
+    document.getElementById('beellama-turbo-level').value = data.turbo_level || '';
+    document.getElementById('beellama-flash-attn').value = (data.flash_attn ? 'true' : 'false');
+    document.getElementById('beellama-reasoning-off').value = (data.reasoning_off ? 'true' : 'false');
+  } catch (e) {
+    console.error('加载 beellama 参数失败:', e);
+  }
+}
+
+async function saveBeellamaParams() {
+  const turboLevel = document.getElementById('beellama-turbo-level').value;
+  const flashAttn = document.getElementById('beellama-flash-attn').value === 'true';
+  const reasoningOff = document.getElementById('beellama-reasoning-off').value === 'true';
+  
+  const btn = document.getElementById('btn-save-beellama-params');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重启中...';
+  
+  try {
+    const resp = await fetchJSON('/api/beellama_params', 'POST', {
+      turbo_level: turboLevel,
+      flash_attn: flashAttn,
+      reasoning_off: reasoningOff
+    });
+    if (resp.status === 'ok') {
+      showToast('全局参数已保存，beellama 重启中...', 'success');
+      await fetchJSON('/api/set_framework', 'POST', {framework: 'beellama'});
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = '💾 保存并重启 beellama';
+        refresh();
+      }, 3000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+      btn.disabled = false;
+      btn.textContent = '💾 保存并重启 beellama';
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '💾 保存并重启 beellama';
+  }
+}
+
+// 📦 模型专属参数管理
+let lastLoadedModel = null;
+
+async function loadModelParams() {
+  if (!currentModel || currentFramework !== 'beellama') return;
+  try {
+    const data = await fetchJSON('/api/beellama_model_params');
+    document.getElementById('model-ctx-size').value = data.ctx_size || '';
+    document.getElementById('model-parallel').value = data.parallel || '';
+    document.getElementById('model-ngpu-layers').value = data.ngpu_layers || '';
+    document.getElementById('model-params-model-name').textContent = currentModel;
+    lastLoadedModel = currentModel;
+    
+    const card = document.getElementById('beellama-model-params-card');
+    if (card) card.style.display = 'block';
+    console.log('✅ 模型专属参数卡片已显示:', currentModel);
+  } catch (e) {
+    console.error('加载模型参数失败:', e);
+  }
+}
+
+async function saveModelParams() {
+  if (!currentModel) {
+    showToast('未加载模型，无法保存', 'error');
+    return;
+  }
+  const ctxSize = document.getElementById('model-ctx-size').value;
+  const parallel = document.getElementById('model-parallel').value;
+  const ngl = document.getElementById('model-ngpu-layers').value;
+  
+  const btn = document.getElementById('btn-save-model-params');
+  const overlay = document.getElementById('model-params-overlay');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存并重启中...';
+  saveInProgress = true;
+  if (overlay) overlay.style.display = 'flex';
+  
+  try {
+    // 一个端点完成: 保存 → 停止 → 启动 → 重载模型
+    const resp = await fetchJSON('/api/save_and_apply_model_params', 'POST', {
+      model: currentModel,
+      ctx_size: ctxSize || null,
+      parallel: parallel || null,
+      ngpu_layers: ngl || null
+    });
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || '已应用新参数并加载模型'), 'success', 6000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存模型参数';
+    saveInProgress = false;
+    if (overlay) overlay.style.display = 'none';
+    refresh();
+  }
+}
+
+async function resetModelParams() {
+  if (!currentModel) {
+    showToast('未加载模型，无法恢复', 'error');
+    return;
+  }
+  if (!confirm('确定要清空 "' + currentModel + '" 的自定义参数并恢复默认值吗？\n\n恢复后：\n- 上下文：使用硬编码默认值 (通常 128K)\n- 并发数：使用硬编码默认值\n- GPU 层数：99\n\n将自动重启 beellama 并重载模型。')) return;
+  
+  const btn = document.getElementById('btn-reset-model-params');
+  const overlay = document.getElementById('model-params-overlay');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重置并重启中...';
+  saveInProgress = true;
+  if (overlay) overlay.style.display = 'flex';
+  
+  try {
+    // 一个端点完成: 清空配置 → 停止 → 启动 → 重载
+    const resp = await fetchJSON('/api/save_and_apply_model_params', 'POST', {
+      model: currentModel,
+      ctx_size: null,
+      parallel: null,
+      ngpu_layers: null
+    });
+    if (resp.status === 'ok') {
+      document.getElementById('model-ctx-size').value = '';
+      document.getElementById('model-parallel').value = '';
+      document.getElementById('model-ngpu-layers').value = '';
+      showToast('✅ ' + (resp.message || '已恢复默认并重载模型'), 'success', 6000);
+    } else {
+      showToast('恢复失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('恢复失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 恢复默认值';
+    saveInProgress = false;
+    if (overlay) overlay.style.display = 'none';
+    refresh();
+  }
+}
+
 </script>
 </body>
 </html>'''

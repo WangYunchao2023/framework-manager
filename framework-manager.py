@@ -7,6 +7,15 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch3: 「➕ 添加模型进列表」改为弹模态框 + 复选框选择
+  - 替换: 之前一键全加 (调 /api/refresh_models)
+  + 新增: /api/scan_for_addition?framework=X GET (返回该框架全量 + visible + hidden)
+  + 新增: /api/set_visible_models POST (接受 visible 列表, 计算 hidden = all - visible)
+  + 新增: HTML 「➕ 添加模型」模态框 (复选框列表 + 全选/全不选/反选)
+  * JS: addModelsToList 改为弹模态框流程
+  + 新增 JS: renderAddModelsList + addModelsSelectAll/None/Invert + cancelAddModels + confirmAddModels
+  * 保留: /api/refresh_models 端点 (备用于一键重置, 当前不调用)
+  * 保留: /api/hide_model + /api/unhide_model (被「➖ 移除模型」按钮继续用)
 - v1.1.7-patch2: 拆「隐藏」按钮为「➕ 添加 / ➖ 移除」两个
   - 删除: 「🗑 隐藏」按钮 (v1.1.7)
   + 新增: 「➕ 添加模型进列表」按钮 → 调 /api/refresh_models
@@ -1631,6 +1640,70 @@ def api_unhide_model():
     return jsonify({"status": "ok", "hidden": hidden})
 
 
+def _scan_framework_models(framework):
+    """扫描指定框架的所有本地模型 (不过滤 hidden), 用于「➕ 添加模型进列表」"""
+    if framework == "beellama":
+        return get_beellama_models()
+    elif framework == "ollama":
+        return get_ollama_models()
+    elif framework == "comfyui":
+        return get_comfyui_models()
+    return []
+
+
+@app.route("/api/scan_for_addition", methods=["GET"])
+def api_scan_for_addition():
+    """v1.1.7-patch3: 「➕ 添加模型进列表」模态框扫描
+    返回指定框架的所有本地模型 + 当前 visible 列表, 前端据此渲染复选框
+    """
+    framework = request.args.get("framework")
+    if framework not in ("beellama", "ollama", "comfyui"):
+        return jsonify({"error": "framework 必须是 beellama/ollama/comfyui"}), 400
+    # 清缓存强制重扫 (避免 30s 缓存遗漏新文件)
+    global _model_cache, _cache_timestamps
+    _model_cache.pop(framework, None)
+    _cache_timestamps.pop(framework, None)
+    all_models = _scan_framework_models(framework)
+    hidden = _load_hidden().get(framework, [])
+    visible = [m for m in all_models if m not in hidden]
+    audit_log("扫描可用模型", f"framework={framework}, total={len(all_models)}, visible={len(visible)}, hidden={len(hidden)}", "ok")
+    return jsonify({
+        "framework": framework,
+        "all": all_models,
+        "visible": visible,
+        "hidden": hidden
+    })
+
+
+@app.route("/api/set_visible_models", methods=["POST"])
+def api_set_visible_models():
+    """v1.1.7-patch3: 提交「➕ 添加模型进列表」模态框勾选结果
+    接受用户勾选的 visible 列表, 写 hidden 列表 (hidden = all - visible)
+    """
+    data = request.get_json(silent=True) or {}
+    framework = data.get("framework")
+    visible = data.get("visible", [])
+    if framework not in ("beellama", "ollama", "comfyui"):
+        return jsonify({"error": "framework 必须是 beellama/ollama/comfyui"}), 400
+    if not isinstance(visible, list):
+        return jsonify({"error": "visible 必须是列表"}), 400
+    # 重新扫描拿全量 (避免遗漏新文件)
+    global _model_cache, _cache_timestamps
+    _model_cache.pop(framework, None)
+    _cache_timestamps.pop(framework, None)
+    all_models = _scan_framework_models(framework)
+    # 计算新的 hidden (all - visible), 同时校验 visible 必须是 all 的子集
+    all_set = set(all_models)
+    visible_clean = [m for m in visible if m in all_set]
+    new_hidden = sorted(all_set - set(visible_clean))
+    hidden = _load_hidden()
+    hidden[framework] = new_hidden
+    _save_hidden(hidden)
+    audit_log("设置可见模型列表",
+              f"framework={framework}, total={len(all_models)}, visible={len(visible_clean)}, hidden={len(new_hidden)}", "ok")
+    return jsonify({"status": "ok", "visible": visible_clean, "hidden": new_hidden, "total": len(all_models)})
+
+
 @app.route("/api/refresh_models", methods=["POST"])
 def api_refresh_models():
     """v1.1.7-patch2: 「➕ 添加模型进列表」按钮
@@ -1947,6 +2020,29 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
     </div>
   </div>
 </div>
+
+<!-- 「➕ 添加模型进列表」复选框模态框 (v1.1.7-patch3) -->
+<div id="add-models-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--bg-card,#1e2a3a);border-radius:8px;padding:24px;max-width:640px;width:90%;max-height:80vh;display:flex;flex-direction:column;">
+    <h3 style="margin-top:0;color:var(--orange);">➕ 添加模型到 <span id="add-models-modal-fw">—</span> 列表</h3>
+    <p style="font-size:0.85rem;color:var(--text-dim);margin:4px 0 8px;">
+      勾选 = 出现在下拉列表，不勾 = 不出现。已下拉列表中的默认勾选。本地下载的模型（未被下拉的）也列出供选择。
+    </p>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
+      <button class="btn" onclick="addModelsSelectAll()" style="padding:3px 10px;font-size:0.78rem;">✅ 全选</button>
+      <button class="btn" onclick="addModelsSelectNone()" style="padding:3px 10px;font-size:0.78rem;background:#5a5a5a;border-color:#7a7a7a;">⛔ 全不选</button>
+      <button class="btn" onclick="addModelsSelectInvert()" style="padding:3px 10px;font-size:0.78rem;">🔄 反选</button>
+      <span id="add-models-count" style="margin-left:auto;font-size:0.78rem;color:var(--text-dim);"></span>
+    </div>
+    <div id="add-models-list" style="flex:1;overflow-y:auto;background:#1a2a3a;padding:8px 12px;border-radius:4px;font-size:0.88rem;min-height:200px;">
+      <div style="color:var(--text-dim);padding:6px 0;">扫描中…</div>
+    </div>
+    <div class="form-group" style="justify-content:flex-end;gap:8px;margin:12px 0 0;">
+      <button class="btn" onclick="cancelAddModels()" style="background:#5a5a5a;border-color:#7a7a7a;">取消</button>
+      <button class="btn success" onclick="confirmAddModels()" id="btn-confirm-add-models">✅ 确定</button>
+    </div>
+  </div>
+</div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.6;">
@@ -2156,29 +2252,108 @@ async function removeModelFromList() {
   }
 }
 
+// v1.1.7-patch3: 「➕ 添加模型进列表」= 弹模态框 + 复选框选择
+let _addModelsAll = [];
+let _addModelsVisible = [];
+
 async function addModelsToList() {
-  if (!confirm('重新扫描默认位置可用模型 + 恢复所有被移除的模型?\n\n不会删除任何模型文件, 仅刷新下拉列表。')) return;
+  if (!currentFramework) {
+    showToast('未加载框架', 'error');
+    return;
+  }
   const btn = document.getElementById('btn-add-models');
   btn.disabled = true;
   btn.textContent = '⏳ 扫描中...';
   try {
-    const resp = await fetchJSON('/api/refresh_models', 'POST', {});
-    const counts = Object.entries(resp.models || {}).map(([k, v]) => k + '=' + v.length).join(', ');
-    showToast('✅ 已刷新: ' + counts, 'success', 5000);
-    // 刷新当前框架的下拉框
-    if (currentFramework && resp.models && resp.models[currentFramework]) {
-      updateModelSelect(resp.models[currentFramework]);
-    } else {
-      // 重新拉当前框架
-      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(currentFramework || 'beellama'));
-      updateModelSelect(r.models || []);
-    }
-    loadHiddenModels();
+    const resp = await fetchJSON('/api/scan_for_addition?framework=' + encodeURIComponent(currentFramework));
+    _addModelsAll = resp.all || [];
+    _addModelsVisible = resp.visible || [];
+    document.getElementById('add-models-modal-fw').textContent = currentFramework;
+    renderAddModelsList();
+    document.getElementById('add-models-modal').style.display = 'flex';
   } catch (e) {
-    showToast('刷新失败: ' + e.message, 'error');
+    showToast('扫描失败: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = '➕ 添加模型进列表';
+  }
+}
+
+function renderAddModelsList() {
+  const el = document.getElementById('add-models-list');
+  const countEl = document.getElementById('add-models-count');
+  if (!_addModelsAll || _addModelsAll.length === 0) {
+    el.innerHTML = '<div style="color:var(--orange);padding:6px 0;">⚠️ 本地未发现模型, 请检查默认位置/扫描路径。</div>';
+    countEl.textContent = '';
+    return;
+  }
+  let html = '';
+  for (const m of _addModelsAll) {
+    const checked = _addModelsVisible.includes(m);
+    html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid #2a3a4a;cursor:pointer;">'
+          + '<input type="checkbox" class="add-model-cb" data-model="' + escapeHtml(m) + '" ' + (checked ? 'checked' : '') + ' style="cursor:pointer;">'
+          + '<span style="flex:1;font-family:monospace;font-size:0.85rem;">' + escapeHtml(m) + '</span>'
+          + '</label>';
+  }
+  el.innerHTML = html;
+  const checkedCount = el.querySelectorAll('.add-model-cb:checked').length;
+  countEl.textContent = '共 ' + _addModelsAll.length + ' 个, 已选 ' + checkedCount + ' 个';
+  el.querySelectorAll('.add-model-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const c = el.querySelectorAll('.add-model-cb:checked').length;
+      countEl.textContent = '共 ' + _addModelsAll.length + ' 个, 已选 ' + c + ' 个';
+    });
+  });
+}
+
+function addModelsSelectAll() {
+  document.querySelectorAll('.add-model-cb').forEach(cb => cb.checked = true);
+  document.getElementById('add-models-count').textContent = '共 ' + _addModelsAll.length + ' 个, 已选 ' + _addModelsAll.length + ' 个';
+}
+
+function addModelsSelectNone() {
+  document.querySelectorAll('.add-model-cb').forEach(cb => cb.checked = false);
+  document.getElementById('add-models-count').textContent = '共 ' + _addModelsAll.length + ' 个, 已选 0 个';
+}
+
+function addModelsSelectInvert() {
+  document.querySelectorAll('.add-model-cb').forEach(cb => cb.checked = !cb.checked);
+  const c = document.querySelectorAll('.add-model-cb:checked').length;
+  document.getElementById('add-models-count').textContent = '共 ' + _addModelsAll.length + ' 个, 已选 ' + c + ' 个';
+}
+
+function cancelAddModels() {
+  document.getElementById('add-models-modal').style.display = 'none';
+  _addModelsAll = [];
+  _addModelsVisible = [];
+}
+
+async function confirmAddModels() {
+  const visible = Array.from(document.querySelectorAll('.add-model-cb:checked')).map(cb => cb.getAttribute('data-model'));
+  const btn = document.getElementById('btn-confirm-add-models');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存中...';
+  try {
+    const resp = await fetchJSON('/api/set_visible_models', 'POST', {
+      framework: currentFramework,
+      visible: visible
+    });
+    showToast('✅ 已更新: ' + resp.visible.length + ' 个可见, ' + resp.hidden.length + ' 个隐藏', 'success', 5000);
+    document.getElementById('add-models-modal').style.display = 'none';
+    if (typeof updateModelsForCurrentFramework === 'function') {
+      updateModelsForCurrentFramework(true);
+    } else {
+      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(currentFramework));
+      updateModelSelect(r.models || []);
+    }
+    loadHiddenModels();
+    _addModelsAll = [];
+    _addModelsVisible = [];
+  } catch (e) {
+    showToast('保存失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✅ 确定';
   }
 }
 

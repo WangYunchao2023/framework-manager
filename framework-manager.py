@@ -7,6 +7,11 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch1: 修正「模型 & 参数」位置提示为各框架规范路径
+  - beellama: 任意目录 *.gguf (wrapper 默认扫 ~/models/)
+  - ollama:   ~/.ollama/models/ (默认; 环境变量 OLLAMA_MODELS 可改)
+  - comfyui:  extra_model_paths.yaml 配置的目录 (默认 $ComfyUI/models/)
+  - 移除之前错误的 /data/... 提示 (那是用户自定义路径, 不是框架默认)
 - v1.1.7: 「🎯 模型 & 参数」位置提示 + 软移除 + 修复 comfyui 扫描路径
   + HTML: 三个框架的推荐保存位置提示
   + HTML: 「📥 加载模型」旁加「🗑 隐藏」按钮
@@ -1915,9 +1920,9 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.6;">
-  <div>📂 <b style="color:var(--accent);">beellama</b>: <code>~/models/&lt;dir&gt;/*.gguf</code> （或软链）</div>
-  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>/data/ollama/models/</code> （用 ollama pull）</div>
-  <div>📂 <b style="color:var(--accent);">comfyui</b>: <code>/data/ComfyUI/models/{checkpoints,gguf,diffusion_models,...}</code> （或软链）</div>
+  <div>📂 <b style="color:var(--accent);">beellama</b>: 任意目录 <code>*.gguf</code>（wrapper 默认扫 <code>~/models/</code>）</div>
+  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>~/.ollama/models/</code>（默认；环境变量 <code>OLLAMA_MODELS</code> 可改）</div>
+  <div>📂 <b style="color:var(--accent);">comfyui</b>: <code>extra_model_paths.yaml</code> 配置的目录（默认 <code>$ComfyUI/models/</code>）</div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>

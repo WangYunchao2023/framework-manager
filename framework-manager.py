@@ -7,6 +7,12 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch5: 删除「➖ 移除模型出列表」按钮 (被模态框覆盖)
+  - 原因: 「➕ 添加/移除模型」模态框已能承担移除功能 (取消勾选)
+  - HTML: 合并 2 个按钮为 1 个 (按钮文字改为「➕ 添加/移除模型进列表」)
+  - JS: 删除 removeModelFromList 函数
+  - 保留: /api/hide_model 端点 (API 保留, 前端不直接调用)
+  - 保留: 「⚙️ 默认设置」卡片的「隐藏的模型」区 + ↁ 恢复按钮 (兜底恢复路径)
 - v1.1.7-patch4: 修复 refresh() 未同步 currentFramework 全局变量
   - 症状: 「➕ 添加模型进列表」/「➖ 移除模型」点击后报"未加载框架" (toast)
   - 根因: refresh() 函数从 /api/status 拿到 fw 但只设到 DOM textContent, 未赋给 JS 全局 currentFramework
@@ -2058,8 +2064,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>
 <button class="btn primary" onclick="loadModel()" id="btn-load-model">📥 加载模型</button>
-<button class="btn" onclick="addModelsToList()" id="btn-add-models" title="重新扫描默认位置可用模型 + 恢复所有被移除模型" style="background:#2a5a2a;border-color:#3a7a3a;">➕ 添加模型进列表</button>
-<button class="btn" onclick="removeModelFromList()" id="btn-remove-model" title="从下拉列表移除选中模型（不删文件）" style="background:#5a2a2a;border-color:#7a3a3a;">➖ 移除模型出列表</button>
+<button class="btn" onclick="addModelsToList()" id="btn-add-models" title="弹窗列出本地所有模型, 勾选 = 加入下拉列表, 不勾 = 移出下拉列表" style="background:#2a5a2a;border-color:#3a7a3a;">➕ 添加/移除模型进列表</button>
 </div>
 <!-- 加载状态指示器 -->
 <div id="load-status-area" style="margin-top:10px;display:none;">
@@ -2234,34 +2239,10 @@ function updateModelSelect(models) {
   loadHiddenModels();
 }
 
-async function removeModelFromList() {
-  if (!currentFramework) {
-    showToast('未加载框架', 'error');
-    return;
-  }
-  var sel = document.getElementById('model-select');
-  var model = sel.value;
-  if (!model) {
-    showToast('请先在下拉框中选择要移除的模型', 'info');
-    return;
-  }
-  if (!confirm(`从下拉列表移除「${model}」?\n\n不会删除模型文件, 以后点「➕ 添加模型进列表」可恢复。`)) return;
-  try {
-    await fetchJSON('/api/hide_model', 'POST', { framework: currentFramework, model: model });
-    showToast('✅ 已从列表移除「' + model + '」', 'success', 3000);
-    // 重新加载该框架的模型列表
-    if (typeof updateModelsForCurrentFramework === 'function') {
-      updateModelsForCurrentFramework(true);
-    } else {
-      // fallback: 走 switchFramework 路径
-      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(currentFramework));
-      updateModelSelect(r.models || []);
-    }
-    loadHiddenModels();
-  } catch (e) {
-    showToast('移除失败: ' + e.message, 'error');
-  }
-}
+// v1.1.7-patch5: removeModelFromList 函数已删除 (功能被「➕ 添加/移除模型」模态框覆盖)
+//   移除 = 模态框里取消勾选即可
+//   保留: /api/hide_model 后端端点 (API 保留, 不影响其他功能)
+//   保留: 「⚙️ 默认设置」卡片的「🗑 隐藏的模型」区 + ↩️ 恢复按钮 (兜底恢复路径)
 
 // v1.1.7-patch3: 「➕ 添加模型进列表」= 弹模态框 + 复选框选择
 let _addModelsAll = [];

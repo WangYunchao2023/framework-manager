@@ -4,9 +4,22 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.5
+版本：1.1.7
 
 更新日志:
+- v1.1.7: 「🎯 模型 & 参数」位置提示 + 软移除 + 修复 comfyui 扫描路径
+  + HTML: 三个框架的推荐保存位置提示
+  + HTML: 「📥 加载模型」旁加「🗑 隐藏」按钮
+  + HTML: 「⚙️ 默认设置」底部加「隐藏的模型」区, 可点 ↩️ 恢复
+  + /api/hidden_models (GET) + /api/hide_model + /api/unhide_model 端点
+  + 隐藏配置: ~/.openclaw/config/framework-manager-hidden.json
+  * 修复 get_comfyui_models 扫描路径: 之前只扫 ~/ComfyUI (源码), 补加 /data/ComfyUI (实际部署)
+  + /data/ComfyUI/models 加子目录: checkpoints/gguf/diffusion_models/loras
+- v1.1.6: 重组到 scripts/framework-manager/ 子目录 + 删除孤儿仓库
+  - 3 个文件移动: framework-manager.py / beellama-wrapper.sh / switch-inference.sh
+  - SWITCH_SCRIPT / LOG_FILE 改为 __file__ 相对路径 (不再硬编码 ~/.openclaw/scripts/)
+  - systemd unit (framework-manager + beellama) ExecStart 改为新路径
+  - 删除 ~/.openclaw/framework-manager/ 独立 git 仓库 (原是技术债务, 未被任何服务引用)
 - v1.1.5: 「➕ 添加新模型」被动流程 + defaults 卡片重构
   - 新增 /api/init_model_with_fallback: 用 _fallback 初始化新模型 (写 defaults+per-model+启动)
   - 改 /api/load_model: 检测到无 per-model 时返回 missing_in_defaults=true (不静默报错)
@@ -86,15 +99,16 @@ import flask
 from flask import Flask, request, jsonify, render_template_string
 
 # ── 配置 ──────────────────────────────────────────────────────────
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 9528
-SWITCH_SCRIPT = os.path.expanduser("~/.openclaw/scripts/switch-inference.sh")
+SWITCH_SCRIPT = os.path.join(_THIS_DIR, "switch-inference.sh")
 OLLAMA_SERVICE = "ollama.service"
 BEELLAMA_SERVICE = "beellama.service"
 COMFYUI_SERVICE = "comfyui.service"
 OLLAMA_PORT = 11434
 BEELLAMA_PORT = 8080
 COMFYUI_PORT = 8188
-LOG_FILE = os.path.expanduser("~/.openclaw/scripts/framework-manager-audit.log")
+LOG_FILE = os.path.join(_THIS_DIR, "framework-manager-audit.log")
 CONFIG_DIR = os.path.expanduser("~/.openclaw/config")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "framework-manager.json")
 
@@ -102,6 +116,10 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "framework-manager.json")
 # 与 framework-manager.json 解耦, 只被「🎯 默认值」卡片读写
 # 结构: {_fallback: {...}, models: {short_name: {...}}}
 DEFAULTS_FILE = os.path.join(CONFIG_DIR, "framework-manager-defaults.json")
+
+# 隐藏模型列表 (v1.1.7 新增): 从下拉框中隐藏但不删除文件
+# 结构: {beellama: [path1, ...], ollama: [name1, ...], comfyui: [path1, ...]}
+HIDDEN_MODELS_FILE = os.path.join(CONFIG_DIR, "framework-manager-hidden.json")
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -222,6 +240,32 @@ def _save_defaults(defaults):
         return True
     except Exception as e:
         log.error(f"保存默认值文件失败: {e}")
+        return False
+
+
+def _load_hidden():
+    """加载隐藏模型列表, 不存在则返回空结构"""
+    if not os.path.exists(HIDDEN_MODELS_FILE):
+        return {"beellama": [], "ollama": [], "comfyui": []}
+    try:
+        with open(HIDDEN_MODELS_FILE, 'r') as f:
+            data = json.load(f)
+        for k in ("beellama", "ollama", "comfyui"):
+            data.setdefault(k, [])
+        return data
+    except Exception as e:
+        log.error(f"加载隐藏列表失败: {e}")
+        return {"beellama": [], "ollama": [], "comfyui": []}
+
+
+def _save_hidden(hidden):
+    """保存隐藏模型列表"""
+    try:
+        with open(HIDDEN_MODELS_FILE, 'w') as f:
+            json.dump(hidden, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        log.error(f"保存隐藏列表失败: {e}")
         return False
 
 
@@ -397,10 +441,20 @@ def get_beellama_models():
     return sorted(models)
 
 def get_comfyui_models():
-    """扫描 ComfyUI 模型，支持子目录和多种模型类型"""
+    """扫描 ComfyUI 模型，支持子目录和多种模型类型
+    v1.1.7: 加 /data/ComfyUI/models 实际部署路径, 原来只扫 ~/ComfyUI (源码) 扫不到任何实际模型
+    """
     model_dirs = [
+        # 实际部署路径 (优先)
+        Path("/data/ComfyUI/models/checkpoints"),
+        Path("/data/ComfyUI/models/diffusers"),
+        Path("/data/ComfyUI/models/unet"),
+        Path("/data/ComfyUI/models/gguf"),
+        Path("/data/ComfyUI/models/diffusion_models"),
+        Path("/data/ComfyUI/models/loras"),
+        # 源码 demo 路径 (兼容, 旧脚本)
         Path.home() / "ComfyUI" / "models" / "checkpoints",
-        Path.home() / "ComfyUI" / "models" / "diffusers",  # Diffusers 格式
+        Path.home() / "ComfyUI" / "models" / "diffusers",
         Path.home() / "ComfyUI" / "models" / "unet",
     ]
     models = []
@@ -458,7 +512,11 @@ def get_framework_models(framework, force_refresh=False):
         models = get_comfyui_models()
     else:
         models = []
-    
+
+    # v1.1.7: 过滤隐藏模型
+    hidden = _load_hidden()
+    models = [m for m in models if m not in hidden.get(framework, [])]
+
     _model_cache[framework] = models
     _cache_timestamps[framework] = current_time
     return models
@@ -1520,6 +1578,46 @@ def api_restore_default_model_params():
     return _apply_model_params(model_name)
 
 
+# ── 隐藏模型管理 (v1.1.7) ───────────────────────────────
+# 从下拉框隐藏但不删除文件, 写入 ~/.openclaw/config/framework-manager-hidden.json
+
+@app.route("/api/hidden_models", methods=["GET"])
+def api_get_hidden_models():
+    return jsonify(_load_hidden())
+
+
+@app.route("/api/hide_model", methods=["POST"])
+def api_hide_model():
+    data = request.get_json(silent=True) or {}
+    framework = data.get("framework")
+    model = data.get("model")
+    if framework not in ("beellama", "ollama", "comfyui"):
+        return jsonify({"error": "framework 必须是 beellama/ollama/comfyui"}), 400
+    if not model:
+        return jsonify({"error": "未指定 model"}), 400
+    hidden = _load_hidden()
+    if model not in hidden[framework]:
+        hidden[framework].append(model)
+        _save_hidden(hidden)
+    return jsonify({"status": "ok", "hidden": hidden})
+
+
+@app.route("/api/unhide_model", methods=["POST"])
+def api_unhide_model():
+    data = request.get_json(silent=True) or {}
+    framework = data.get("framework")
+    model = data.get("model")
+    if framework not in ("beellama", "ollama", "comfyui"):
+        return jsonify({"error": "framework 必须是 beellama/ollama/comfyui"}), 400
+    if not model:
+        return jsonify({"error": "未指定 model"}), 400
+    hidden = _load_hidden()
+    if model in hidden[framework]:
+        hidden[framework].remove(model)
+        _save_hidden(hidden)
+    return jsonify({"status": "ok", "hidden": hidden})
+
+
 @app.route("/api/models_by_framework")
 def api_models_by_framework():
     """获取指定框架的模型列表（独立于当前框架）"""
@@ -1816,9 +1914,15 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 </div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.6;">
+  <div>📂 <b style="color:var(--accent);">beellama</b>: <code>~/models/&lt;dir&gt;/*.gguf</code> （或软链）</div>
+  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>/data/ollama/models/</code> （用 ollama pull）</div>
+  <div>📂 <b style="color:var(--accent);">comfyui</b>: <code>/data/ComfyUI/models/{checkpoints,gguf,diffusion_models,...}</code> （或软链）</div>
+</div>
 <div class="form-row">
-<div class="form-group"><label>模型</label><select id="model-select" style="min-width:200px"><option value="">— 加载模型到当前框架 —</option></select></div>
+<div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>
 <button class="btn primary" onclick="loadModel()" id="btn-load-model">📥 加载模型</button>
+<button class="btn" onclick="hideSelectedModel()" id="btn-hide-model" title="从下拉框隐藏选中模型（不删文件）" style="background:#5a2a2a;border-color:#7a3a3a;">🗑 隐藏</button>
 </div>
 <!-- 加载状态指示器 -->
 <div id="load-status-area" style="margin-top:10px;display:none;">
@@ -1870,6 +1974,13 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
 💡 空闲超时后自动切换到默认框架和模型。设为 0 禁用自动回退。
 </p>
+</div>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.85rem;">
+  <div style="color:var(--orange);font-size:0.82rem;margin-bottom:6px;">🗑 隐藏的模型（点 ↩️ 恢复显示）</div>
+  <div id="hidden-models-list" style="font-size:0.85rem;">
+    <div style="color:var(--text-dim);">加载中…</div>
+  </div>
+</div>
 </div>
 <div class="card">
 <h2>📝 操作日志</h2>
@@ -1968,13 +2079,91 @@ function updateModelSelect(models) {
   models.forEach(function(m) {
     var opt = document.createElement('option');
     opt.value = m;
-    opt.textContent = m;
+    opt.textContent = m + '  🗑';
+    opt.dataset.modelPath = m;
     sel.appendChild(opt);
   });
   // 恢复之前选中的值（如果新列表里还有的话）
   if (prevValue) {
     sel.value = prevValue;
   }
+  // 同步隐藏区状态
+  loadHiddenModels();
+}
+
+async function hideSelectedModel() {
+  if (!currentFramework) {
+    showToast('未加载框架', 'error');
+    return;
+  }
+  var sel = document.getElementById('model-select');
+  var model = sel.value;
+  if (!model) {
+    showToast('请先在下拉框中选择要隐藏的模型', 'info');
+    return;
+  }
+  if (!confirm(`从下拉框隐藏「${model}」?\n\n不会删除模型文件, 以后可以在「⚙️ 默认设置」底部恢复。`)) return;
+  try {
+    await fetchJSON('/api/hide_model', 'POST', { framework: currentFramework, model: model });
+    showToast('✅ 已隐藏「' + model + '」', 'success', 3000);
+    // 重新加载该框架的模型列表
+    if (typeof updateModelsForCurrentFramework === 'function') {
+      updateModelsForCurrentFramework(true);
+    } else {
+      // fallback: 走 switchFramework 路径
+      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(currentFramework));
+      updateModelSelect(r.models || []);
+    }
+    loadHiddenModels();
+  } catch (e) {
+    showToast('隐藏失败: ' + e.message, 'error');
+  }
+}
+
+async function loadHiddenModels() {
+  try {
+    const data = await fetchJSON('/api/hidden_models');
+    const el = document.getElementById('hidden-models-list');
+    let total = (data.beellama || []).length + (data.ollama || []).length + (data.comfyui || []).length;
+    if (total === 0) {
+      el.innerHTML = '<div style="color:var(--text-dim);padding:4px 0;">无隐藏模型</div>';
+      return;
+    }
+    let html = '';
+    for (const fw of ['beellama', 'ollama', 'comfyui']) {
+      const items = data[fw] || [];
+      if (items.length === 0) continue;
+      html += '<div style="margin-top:6px;"><b style="color:var(--accent);">' + fw + '</b> (' + items.length + '):</div>';
+      for (const m of items) {
+        html += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 16px;">'
+              + '<span style="flex:1;font-family:monospace;font-size:0.8rem;">' + escapeHtml(m) + '</span>'
+              + '<button class="btn" onclick="unhideModel(\'' + fw + '\', \'' + escapeHtml(m).replace(/'/g, "\\'") + '\')" style="padding:2px 8px;font-size:0.75rem;background:#2a5a2a;border-color:#3a7a3a;">↩️ 恢复</button>'
+              + '</div>';
+      }
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    console.error('加载隐藏列表失败:', e);
+  }
+}
+
+async function unhideModel(framework, model) {
+  if (!confirm(`恢复显示「${model}」?`)) return;
+  try {
+    await fetchJSON('/api/unhide_model', 'POST', { framework, model });
+    showToast('✅ 已恢复「' + model + '」', 'success', 3000);
+    if (currentFramework === framework) {
+      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(framework));
+      updateModelSelect(r.models || []);
+    }
+    loadHiddenModels();
+  } catch (e) {
+    showToast('恢复失败: ' + e.message, 'error');
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 async function switchFramework(fw) {
   if (isSwitching) return;

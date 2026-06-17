@@ -15,6 +15,8 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
   - 新增 /api/restore_default_model_params: 从 defaults 读值→写入 per-model→重启 beellama
   - 「🔄 恢复默认」按钮行为变更: 从 defaults 文件读取值覆盖 per-model (不再清空)
   - 首次启动自动初始化 defaults.json (默认 128K+2+ngl99, 各模型值预填)
+  - 启动时一次性迁移 _migrate_legacy_models: 为 4 个老模型补全 per-model 缺失字段
+    保留用户已设值, 只补 None 字段; 幂等可重跑
   - 后续: 「➕ 添加新模型」功能将用 _fallback 值初始化新模型 (未在本版实现)
 - v1.1.3: 移除"应用推荐"功能 + 简化推荐/默认值体系
   - 需求: 统一默认值与推荐值，移除独立的"应用推荐"按钮
@@ -215,6 +217,40 @@ def _save_defaults(defaults):
     except Exception as e:
         log.error(f"保存默认值文件失败: {e}")
         return False
+
+
+def _migrate_legacy_models():
+    """v1.1.4 一次性迁移: 为 defaults.json 中列出的模型补全 per-model 缺失字段
+    背景: v1.1.4 删除 wrapper 4 case 写死, 改为从 per-model 读取
+    后果: 4 个老模型必须 per-model 三字段齐全才能启动
+    策略: 保留用户已设值 (非 None), 只补 None 字段
+    幂等: 多次调用结果一致, 可安全重跑
+    """
+    try:
+        defaults = _load_defaults()
+        config = load_config()
+        models_cfg = (
+            config
+            .setdefault("framework_params", {})
+            .setdefault("beellama", {})
+            .setdefault("models", {})
+        )
+        migrated = []
+        for short_name, default_params in defaults.get("models", {}).items():
+            pm = models_cfg.setdefault(short_name, {})
+            for field in ("ctx_size", "parallel", "ngpu_layers"):
+                # 只补 None 字段, 保留用户已设值
+                if pm.get(field) is None and default_params.get(field) is not None:
+                    pm[field] = default_params[field]
+                    migrated.append(f"{short_name}.{field}={default_params[field]}")
+        if migrated:
+            save_config(config)
+            audit_log("迁移老模型 per-model",
+                      f"补全字段: {', '.join(migrated)}", "ok")
+        return len(migrated)
+    except Exception as e:
+        log.error(f"迁移老模型失败: {e}")
+        return 0
 
 
 def get_nvidia_vram():
@@ -1443,6 +1479,11 @@ def api_health():
 def initialize():
     global current_framework, current_model, last_activity_time
     config = load_config()
+
+    # 0. 一次性迁移: 为 defaults.json 中列出的模型补全 per-model 缺失字段
+    #    原因: 4 个老模型 wrapper 不再 case 兑底, per-model 缺字段会启动报错
+    #    策略: 保留用户已设值, 只补 None 字段
+    _migrate_legacy_models()
 
     # 1. 先检测当前实际运行的框架（不改动，只检测）
     detect_current_framework()

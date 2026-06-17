@@ -7,6 +7,14 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch2: 拆「隐藏」按钮为「➕ 添加 / ➖ 移除」两个
+  - 删除: 「🗑 隐藏」按钮 (v1.1.7)
+  + 新增: 「➕ 添加模型进列表」按钮 → 调 /api/refresh_models
+    行为: 强制重扫默认位置 + 清空 hidden 列表 (恢复所有被移除的)
+  + 新增: 「➖ 移除模型出列表」按钮 (原隐藏按钮, 只改名)
+  + 新增: /api/refresh_models 端点 (清 cache + 清 hidden + 立即重扫)
+  * JS: hideSelectedModel → removeModelFromList (改名)
+  + JS: addModelsToList 新函数
 - v1.1.7-patch1: 修正「模型 & 参数」位置提示为各框架规范路径
   - beellama: 任意目录 *.gguf (wrapper 默认扫 ~/models/)
   - ollama:   ~/.ollama/models/ (默认; 环境变量 OLLAMA_MODELS 可改)
@@ -1623,6 +1631,28 @@ def api_unhide_model():
     return jsonify({"status": "ok", "hidden": hidden})
 
 
+@app.route("/api/refresh_models", methods=["POST"])
+def api_refresh_models():
+    """v1.1.7-patch2: 「➕ 添加模型进列表」按钮
+    行为: 强制重新扫描所有默认位置 + 清空所有隐藏列表
+    等同于"重新发现所有可用模型" (放下新文件/取消所有隐藏后用)
+    """
+    # 1) 清空 _model_cache (强制下次 get_framework_models 重新扫描)
+    global _model_cache, _cache_timestamps
+    _model_cache.clear()
+    _cache_timestamps.clear()
+    # 2) 清空 hidden 列表 (相当于"取消所有移除")
+    empty_hidden = {"beellama": [], "ollama": [], "comfyui": []}
+    _save_hidden(empty_hidden)
+    # 3) 立即重新扫描并返回新列表
+    results = {}
+    for fw in ("beellama", "ollama", "comfyui"):
+        results[fw] = get_framework_models(fw, force_refresh=True)
+    audit_log("刷新模型列表",
+              f"清空 hidden + 重扫; 各框架模型数: {[(k, len(v)) for k, v in results.items()]}", "ok")
+    return jsonify({"status": "ok", "models": results, "hidden": empty_hidden})
+
+
 @app.route("/api/models_by_framework")
 def api_models_by_framework():
     """获取指定框架的模型列表（独立于当前框架）"""
@@ -1927,7 +1957,8 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>
 <button class="btn primary" onclick="loadModel()" id="btn-load-model">📥 加载模型</button>
-<button class="btn" onclick="hideSelectedModel()" id="btn-hide-model" title="从下拉框隐藏选中模型（不删文件）" style="background:#5a2a2a;border-color:#7a3a3a;">🗑 隐藏</button>
+<button class="btn" onclick="addModelsToList()" id="btn-add-models" title="重新扫描默认位置可用模型 + 恢复所有被移除模型" style="background:#2a5a2a;border-color:#3a7a3a;">➕ 添加模型进列表</button>
+<button class="btn" onclick="removeModelFromList()" id="btn-remove-model" title="从下拉列表移除选中模型（不删文件）" style="background:#5a2a2a;border-color:#7a3a3a;">➖ 移除模型出列表</button>
 </div>
 <!-- 加载状态指示器 -->
 <div id="load-status-area" style="margin-top:10px;display:none;">
@@ -2096,7 +2127,7 @@ function updateModelSelect(models) {
   loadHiddenModels();
 }
 
-async function hideSelectedModel() {
+async function removeModelFromList() {
   if (!currentFramework) {
     showToast('未加载框架', 'error');
     return;
@@ -2104,13 +2135,13 @@ async function hideSelectedModel() {
   var sel = document.getElementById('model-select');
   var model = sel.value;
   if (!model) {
-    showToast('请先在下拉框中选择要隐藏的模型', 'info');
+    showToast('请先在下拉框中选择要移除的模型', 'info');
     return;
   }
-  if (!confirm(`从下拉框隐藏「${model}」?\n\n不会删除模型文件, 以后可以在「⚙️ 默认设置」底部恢复。`)) return;
+  if (!confirm(`从下拉列表移除「${model}」?\n\n不会删除模型文件, 以后点「➕ 添加模型进列表」可恢复。`)) return;
   try {
     await fetchJSON('/api/hide_model', 'POST', { framework: currentFramework, model: model });
-    showToast('✅ 已隐藏「' + model + '」', 'success', 3000);
+    showToast('✅ 已从列表移除「' + model + '」', 'success', 3000);
     // 重新加载该框架的模型列表
     if (typeof updateModelsForCurrentFramework === 'function') {
       updateModelsForCurrentFramework(true);
@@ -2121,7 +2152,33 @@ async function hideSelectedModel() {
     }
     loadHiddenModels();
   } catch (e) {
-    showToast('隐藏失败: ' + e.message, 'error');
+    showToast('移除失败: ' + e.message, 'error');
+  }
+}
+
+async function addModelsToList() {
+  if (!confirm('重新扫描默认位置可用模型 + 恢复所有被移除的模型?\n\n不会删除任何模型文件, 仅刷新下拉列表。')) return;
+  const btn = document.getElementById('btn-add-models');
+  btn.disabled = true;
+  btn.textContent = '⏳ 扫描中...';
+  try {
+    const resp = await fetchJSON('/api/refresh_models', 'POST', {});
+    const counts = Object.entries(resp.models || {}).map(([k, v]) => k + '=' + v.length).join(', ');
+    showToast('✅ 已刷新: ' + counts, 'success', 5000);
+    // 刷新当前框架的下拉框
+    if (currentFramework && resp.models && resp.models[currentFramework]) {
+      updateModelSelect(resp.models[currentFramework]);
+    } else {
+      // 重新拉当前框架
+      var r = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(currentFramework || 'beellama'));
+      updateModelSelect(r.models || []);
+    }
+    loadHiddenModels();
+  } catch (e) {
+    showToast('刷新失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '➕ 添加模型进列表';
   }
 }
 

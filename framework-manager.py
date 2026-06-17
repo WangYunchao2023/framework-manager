@@ -7,6 +7,11 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch4: 修复 refresh() 未同步 currentFramework 全局变量
+  - 症状: 「➕ 添加模型进列表」/「➖ 移除模型」点击后报"未加载框架" (toast)
+  - 根因: refresh() 函数从 /api/status 拿到 fw 但只设到 DOM textContent, 未赋给 JS 全局 currentFramework
+  - 修复: 在 refresh() 中同步 currentFramework = fw (与 currentModel 同步方式一致)
+  - 影响: 下游 addModelsToList/removeModelFromList/confirmAddModels 全部正常
 - v1.1.7-patch3: 「➕ 添加模型进列表」改为弹模态框 + 复选框选择
   - 替换: 之前一键全加 (调 /api/refresh_models)
   + 新增: /api/scan_for_addition?framework=X GET (返回该框架全量 + visible + hidden)
@@ -2152,7 +2157,13 @@ async function refresh() {
     else document.getElementById('sv-framework').style.color = 'var(--text-dim)';
     document.getElementById('sv-pid').textContent = data.pid || '—';
     document.getElementById('sv-model').textContent = data.model || '—';
-    // ⚙️ 同步 JS 全局 currentModel，供 loadModelParams() 使用
+    // ⚙️ 同步 JS 全局 currentFramework + currentModel, 供下游按钮用
+    // v1.1.7-patch4: 同步 currentFramework (之前遗漏, 导致 addModelsToList/removeModelFromList 报"未加载框架")
+    if (fw && fw !== '—' && fw !== '\u2014') {
+      currentFramework = fw;
+    } else {
+      currentFramework = null;
+    }
     if (data.model && data.model !== '—' && data.model !== '\u2014') {
       currentModel = data.model;
     } else {

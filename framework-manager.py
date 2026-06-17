@@ -7,6 +7,13 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch7: 加载不同模型后「默认值」卡片不刷新
+  - 症状: beellama 加载 gemma-4-26b 后, defaults 卡片仍显示上一个模型 (如 qwen3.6-q3)
+  - 根因: refresh() 只更新 JS currentModel 变量和 DOM, 不重渲染 defaults 卡片
+            须手动调 renderDefaults(), 之前从未自动调
+  - 修复: refresh() 检测到 currentModel 变化时自动调 renderDefaults()
+  - 验证: 加载 qwen3.6-q3 → defaults 卡片显示 qwen3.6-q3
+            加载 gemma-4-26b → defaults 卡片自动切换为 gemma-4-26b
 - v1.1.7-patch6: 修复 ollama 刚切换后加载报错 (Connection refused)
   - 根因: switch_framework_to 启动 ollama.service 后不等待 API 就绪
             用户立即点加载, ollama API 还没起来, urlopen 报错
@@ -2188,9 +2195,17 @@ async function refresh() {
       currentFramework = null;
     }
     if (data.model && data.model !== '—' && data.model !== '\u2014') {
-      currentModel = data.model;
+      // v1.1.7-patch7: 检测到 currentModel 变化时重新渲染「默认值」卡片
+      // 之前: 加载不同模型后 defaults 卡片不刷新, 仍显示旧模型
+      if (data.model !== currentModel) {
+        currentModel = data.model;
+        if (typeof renderDefaults === 'function') renderDefaults();
+      }
     } else {
-      currentModel = null;
+      if (currentModel !== null) {
+        currentModel = null;
+        if (typeof renderDefaults === 'function') renderDefaults();
+      }
     }
     document.getElementById('sv-vram').textContent = (data.vram_used_mb/1024).toFixed(0) + ' / ' + (data.vram_total_mb/1024).toFixed(0) + ' GB (' + data.vram_percent + '%)';
     const bar = document.getElementById('vram-bar');

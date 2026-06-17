@@ -4,9 +4,15 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.4
+版本：1.1.5
 
 更新日志:
+- v1.1.5: 「➕ 添加新模型」被动流程 + defaults 卡片重构
+  - 新增 /api/init_model_with_fallback: 用 _fallback 初始化新模型 (写 defaults+per-model+启动)
+  - 改 /api/load_model: 检测到无 per-model 时返回 missing_in_defaults=true (不静默报错)
+  - 前端: 加载无配置模型 → 弹模态框「用 _fallback 初始化?」→ 用户确认
+  - defaults 卡片重构: 只显示当前加载模型 + _fallback (不再列出全部)
+  - 保存逻辑改为只改 _fallback + 当前模型, 避免误覆盖其他模型
 - v1.1.4: 新增「🎯 默认值」系统 + wrapper 简化为纯配置驱动
   - 新增独立 defaults 文件: framework-manager-defaults.json
     结构: {_fallback: {ctx/parallel/ngl}, models: {name: {...}}}
@@ -1131,10 +1137,75 @@ def api_load_model():
         _loading_state.update({"status": "error", "message": "未指定模型", "model": None, "progress": 0})
         return jsonify({"error": "未指定模型"}), 400
 
+    # v1.1.5: 检测 per-model 是否完整. 缺失则返回 missing_in_defaults=true
+    # 避免静默调用 wrapper 失败, 前端能弹模态框引导用户初始化
+    if current_framework == "beellama":
+        short_name = _extract_short_model_name(model)
+        config = load_config()
+        pm = (config.get("framework_params", {}).get("beellama", {}).get("models", {}).get(short_name, {}))
+        miss = [f for f in ("ctx_size", "parallel", "ngpu_layers") if pm.get(f) is None]
+        if miss:
+            return jsonify({
+                "status": "needs_init",
+                "missing_in_defaults": True,
+                "short_name": short_name,
+                "model": model,
+                "missing_fields": miss,
+                "error": f"模型 {short_name} 缺少配置字段: {', '.join(miss)}",
+                "message": "需先用 _fallback 初始化"
+            }), 200
+
     ok, msg = load_model_for_framework(model)
     if ok:
         return jsonify({"status": "ok", "message": msg})
     return jsonify({"error": msg}), 400
+
+
+@app.route("/api/init_model_with_fallback", methods=["POST"])
+def api_init_model_with_fallback():
+    """「➕ 添加新模型」被动流程: 用 _fallback 初始化指定模型 → 启动
+    流程: 写 defaults (如果未登记) → 写 per-model → 重启 beellama + 重载
+    前端在加载无配置模型时, 弹模态框让用户确认后调用
+    """
+    global current_model, current_framework
+    if current_framework != "beellama":
+        return jsonify({"error": "当前不是 beellama 框架"}), 400
+
+    data = request.get_json(silent=True) or {}
+    model_name = data.get("model")
+    if not model_name:
+        return jsonify({"error": "未指定模型"}), 400
+
+    short_name = _extract_short_model_name(model_name)
+    defaults = _load_defaults()
+
+    # 1) defaults 补充 (如果该模型未登记)
+    if short_name not in defaults.get("models", {}):
+        defaults.setdefault("models", {})[short_name] = defaults.get("_fallback", {}).copy()
+        if not _save_defaults(defaults):
+            return jsonify({"error": "写入 defaults.json 失败"}), 500
+        audit_log("defaults 补充新模型",
+                  f"model={short_name}, source=_fallback={defaults['_fallback']}", "ok")
+
+    # 2) per-model 写入 (从 defaults 读, 保证两端一致)
+    config = load_config()
+    models_cfg = (
+        config
+        .setdefault("framework_params", {})
+        .setdefault("beellama", {})
+        .setdefault("models", {})
+    )
+    models_cfg[short_name] = {
+        "ctx_size": defaults["models"][short_name].get("ctx_size"),
+        "parallel": defaults["models"][short_name].get("parallel"),
+        "ngpu_layers": defaults["models"][short_name].get("ngpu_layers"),
+    }
+    save_config(config)
+    audit_log("初始化新模型 per-model",
+              f"model={short_name}, ctx={models_cfg[short_name]['ctx_size']}, parallel={models_cfg[short_name]['parallel']}", "ok")
+
+    # 3) 重启 + 重载
+    return _apply_model_params(model_name)
 
 
 def _extract_short_model_name(model_path):
@@ -1696,9 +1767,9 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 </p>
 </div>
 <div class="card">
-<h2>🎯 默认值</h2>
+<h2>🎯 默认值 <span id="defaults-current-model-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-编辑这里的值会保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code>。点「🔄 恢复默认」会把对应值复制到 per-model 并重启 beellama。
+仅显示当前加载模型的默认值 (保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code>)。点「🔄 恢复默认」会把当前模型值复制到 per-model 并重启 beellama。
 </p>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;">
   <div style="color:var(--orange);font-size:0.82rem;margin-bottom:6px;">⚙️ 统一默认 (_fallback) — 未来「➕ 添加新模型」会使用此值初始化</div>
@@ -1718,15 +1789,30 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
   </div>
 </div>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;">
-  <div style="color:var(--orange);font-size:0.82rem;margin-bottom:6px;">📋 各模型默认值</div>
-  <div id="defaults-models-list" style="font-size:0.85rem;">
+  <div style="color:var(--orange);font-size:0.82rem;margin-bottom:6px;">📋 当前模型默认值: <span id="defaults-current-name">—</span></div>
+  <div id="defaults-current-row" style="font-size:0.85rem;">
     <div style="color:var(--text-dim);padding:6px 0;">加载中…</div>
   </div>
 </div>
 <div class="form-group" style="justify-content:flex-end;">
-  <button class="btn" onclick="addDefaultModelRow()" id="btn-add-default-model">➕ 添加模型行</button>
   <button class="btn success" onclick="saveDefaults()" id="btn-save-defaults">💾 保存默认值</button>
 </div>
+</div>
+
+<!-- 「➕ 添加新模型」确认模态框 -->
+<div id="init-model-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--bg-card,#1e2a3a);border-radius:8px;padding:24px;max-width:500px;width:90%;">
+    <h3 style="margin-top:0;color:var(--orange);">➕ 初始化新模型</h3>
+    <p id="init-model-modal-text" style="font-size:0.95rem;line-height:1.6;"></p>
+    <div style="background:#1a2a3a;padding:10px 14px;border-radius:4px;margin:12px 0;font-size:0.85rem;">
+      <div style="color:var(--text-dim);">即将写入 defaults.json 和 per-model:</div>
+      <div id="init-model-preview" style="margin-top:6px;font-family:monospace;"></div>
+    </div>
+    <div class="form-group" style="justify-content:flex-end;gap:8px;margin:0;">
+      <button class="btn" onclick="cancelInitModel()" style="background:#5a5a5a;border-color:#7a7a7a;">取消</button>
+      <button class="btn success" onclick="confirmInitModel()" id="btn-confirm-init">✨ 初始化并启动</button>
+    </div>
+  </div>
 </div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
@@ -2016,6 +2102,13 @@ async function loadModel() {
 
   try {
     var resp = await fetchJSON('/api/load_model', 'POST', { model: model });
+    // v1.1.5: 处理 missing_in_defaults: 弹模态框让用户确认是否用 _fallback 初始化
+    if (resp && resp.missing_in_defaults) {
+      stopLoadStatusPoll();
+      showLoadStatus(false);
+      showInitModelModal(model, resp.short_name, resp.error);
+      return;
+    }
   } catch (e) {
     stopLoadStatusPoll();
     showLoadStatus(false);
@@ -2315,7 +2408,7 @@ async function resetModelParams() {
   }
 }
 
-// ── 「🎯 默认值」卡片 (v1.1.4) ──────────────────────────
+// ── 「🎯 默认值」卡片 (v1.1.5: 只显示当前加载模型) ──────────────────────────
 
 async function loadDefaults() {
   try {
@@ -2328,53 +2421,62 @@ async function loadDefaults() {
 }
 
 function renderDefaults() {
-  // _fallback
+  // _fallback 永远显示
   const fb = defaultsCache._fallback || {};
   document.getElementById('defaults-fallback-ctx').value = fb.ctx_size ?? '';
   document.getElementById('defaults-fallback-parallel').value = fb.parallel ?? '';
   document.getElementById('defaults-fallback-ngl').value = fb.ngpu_layers ?? '';
-  // models 列表
-  const list = document.getElementById('defaults-models-list');
-  const names = Object.keys(defaultsCache.models || {}).sort();
-  if (names.length === 0) {
-    list.innerHTML = '<div style="color:var(--text-dim);padding:6px 0;">暂无模型。点「➕ 添加模型行」新增。</div>';
+
+  const badge = document.getElementById('defaults-current-model-badge');
+  const nameEl = document.getElementById('defaults-current-name');
+  const rowEl = document.getElementById('defaults-current-row');
+
+  if (!currentModel) {
+    badge.textContent = '(未加载模型)';
+    nameEl.textContent = '—';
+    rowEl.innerHTML = '<div style="color:var(--text-dim);padding:6px 0;">加载模型后, 在此编辑该模型的默认值</div>';
     return;
   }
-  let html = '';
-  for (const name of names) {
-    const p = defaultsCache.models[name] || {};
-    html += `<div class="defaults-row" data-name="${name}" style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #2a3a4a;">
-      <span style="min-width:160px;font-weight:500;">${name}</span>
-      <input type="number" class="df-ctx" placeholder="ctx" value="${p.ctx_size ?? ''}" min="512" max="1048576" step="512" style="width:90px;">
-      <input type="number" class="df-parallel" placeholder="parallel" value="${p.parallel ?? ''}" min="1" max="16" style="width:70px;">
-      <input type="number" class="df-ngl" placeholder="ngl" value="${p.ngpu_layers ?? ''}" min="0" max="200" style="width:70px;">
-      <button class="btn" onclick="removeDefaultModelRow('${name}')" style="padding:2px 8px;font-size:0.8rem;background:#5a2a2a;border-color:#7a3a3a;">🗑</button>
-    </div>`;
-  }
-  list.innerHTML = html;
-}
 
-function addDefaultModelRow() {
-  const name = prompt('输入模型 short_name (如 qwen3-14b):');
-  if (!name) return;
-  if (defaultsCache.models[name]) {
-    showToast(`「${name}」已存在`, 'error');
-    return;
-  }
-  // 填入 _fallback 默认值
-  const fb = defaultsCache._fallback || {};
-  defaultsCache.models[name] = {
-    ctx_size: fb.ctx_size ?? 131072,
-    parallel: fb.parallel ?? 2,
-    ngpu_layers: fb.ngpu_layers ?? 99,
-  };
-  renderDefaults();
-}
+  badge.textContent = `(当前: ${currentModel})`;
 
-function removeDefaultModelRow(name) {
-  if (!confirm(`删除「${name}」的默认值记录？`)) return;
-  delete defaultsCache.models[name];
-  renderDefaults();
+  // 查找 currentModel 对应的 defaults.models key
+  // currentModel 在 framework-manager.py 中是 short_name (如 qwen3.6-q3)
+  // defaults.models 的 key 也是 short_name, 直接匹配
+  let matchedKey = currentModel;
+  let matchedParams = defaultsCache.models && defaultsCache.models[matchedKey];
+  if (!matchedParams) {
+    // fallback: 模糊匹配 (处理 currentModel 是 GGUF 路径的情况)
+    for (const k of Object.keys(defaultsCache.models || {})) {
+      if (currentModel.includes(k) || k.includes(currentModel)) {
+        matchedKey = k;
+        matchedParams = defaultsCache.models[k];
+        break;
+      }
+    }
+  }
+
+  if (matchedParams) {
+    nameEl.textContent = matchedKey;
+    rowEl.innerHTML = `
+      <div class="defaults-row" data-name="${matchedKey}" style="display:flex;gap:8px;align-items:center;padding:6px 0;">
+        <input type="number" class="df-ctx" placeholder="ctx" value="${matchedParams.ctx_size ?? ''}" min="512" max="1048576" step="512" style="width:110px;">
+        <input type="number" class="df-parallel" placeholder="parallel" value="${matchedParams.parallel ?? ''}" min="1" max="16" style="width:80px;">
+        <input type="number" class="df-ngl" placeholder="ngl" value="${matchedParams.ngpu_layers ?? ''}" min="0" max="200" style="width:80px;">
+        <span style="color:var(--text-dim);font-size:0.78rem;margin-left:8px;">(将保存到 <code>${matchedKey}</code>)</span>
+      </div>
+    `;
+  } else {
+    // 当前模型无 defaults 记录
+    nameEl.textContent = currentModel;
+    rowEl.innerHTML = `
+      <div style="color:var(--orange);padding:6px 0;font-size:0.88rem;">
+        ⚠️ 当前模型「${currentModel}」无默认值记录。<br>
+        加载时会自动用 _fallback 初始化 (弹模态框确认)。<br>
+        初始化后下次保存即可在此编辑。
+      </div>
+    `;
+  }
 }
 
 async function saveDefaults() {
@@ -2382,31 +2484,94 @@ async function saveDefaults() {
   btn.disabled = true;
   btn.textContent = '⏳ 保存中...';
   try {
-    // 从输入框收集当前编辑值
+    // 1) _fallback 从输入框读
     const fb_ctx = parseInt(document.getElementById('defaults-fallback-ctx').value) || null;
     const fb_par = parseInt(document.getElementById('defaults-fallback-parallel').value) || null;
     const fb_ngl = parseInt(document.getElementById('defaults-fallback-ngl').value) || null;
+
+    // 2) models: 保留所有非当前模型行, 当前模型行从输入框读
     const models = {};
-    document.querySelectorAll('.defaults-row').forEach(row => {
+    const currentKey = document.getElementById('defaults-current-name').textContent;
+    for (const k of Object.keys(defaultsCache.models || {})) {
+      models[k] = defaultsCache.models[k];
+    }
+    const row = document.querySelector('.defaults-row');
+    if (row) {
       const name = row.getAttribute('data-name');
-      const ctx = parseInt(row.querySelector('.df-ctx').value) || null;
-      const par = parseInt(row.querySelector('.df-parallel').value) || null;
-      const ngl = parseInt(row.querySelector('.df-ngl').value) || null;
-      models[name] = { ctx_size: ctx, parallel: par, ngpu_layers: ngl };
-    });
+      models[name] = {
+        ctx_size: parseInt(row.querySelector('.df-ctx').value) || null,
+        parallel: parseInt(row.querySelector('.df-parallel').value) || null,
+        ngpu_layers: parseInt(row.querySelector('.df-ngl').value) || null,
+      };
+    }
+
     const payload = {
       _fallback: { ctx_size: fb_ctx, parallel: fb_par, ngpu_layers: fb_ngl },
       models: models,
     };
     await fetchJSON('/api/defaults', 'POST', payload);
-    showToast('✅ 默认值已保存', 'success', 4000);
-    // 重新拉一次保证内存与磁盘一致
+    showToast('✅ 默认值已保存 (仅改 _fallback 与当前模型)', 'success', 4000);
     await loadDefaults();
   } catch (e) {
     showToast('保存失败：' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = '💾 保存默认值';
+  }
+}
+
+// ── 「➕ 添加新模型」模态框 (v1.1.5) ──────────────────────────
+
+let _pendingInitModel = null;
+
+async function showInitModelModal(model, shortName, errorMsg) {
+  _pendingInitModel = { model, shortName };
+  try {
+    const defaults = await fetchJSON('/api/defaults');
+    const fb = defaults._fallback || {};
+    document.getElementById('init-model-modal-text').innerHTML =
+      `模型 <code style="background:#0a1a2a;padding:2px 6px;border-radius:3px;">${shortName}</code> 还没有配置: <br>` +
+      `<span style="color:var(--text-dim);font-size:0.85rem;">${errorMsg || '缺 ctx/parallel/ngpu_layers'}</span>`;
+    document.getElementById('init-model-preview').innerHTML =
+      `ctx_size:     <b>${fb.ctx_size ?? '?'}</b><br>` +
+      `parallel:     <b>${fb.parallel ?? '?'}</b><br>` +
+      `ngpu_layers:  <b>${fb.ngpu_layers ?? '?'}</b>`;
+    document.getElementById('init-model-modal').style.display = 'flex';
+  } catch (e) {
+    showToast('读取默认值失败: ' + e.message, 'error');
+  }
+}
+
+function cancelInitModel() {
+  document.getElementById('init-model-modal').style.display = 'none';
+  _pendingInitModel = null;
+}
+
+async function confirmInitModel() {
+  if (!_pendingInitModel) return;
+  const btn = document.getElementById('btn-confirm-init');
+  btn.disabled = true;
+  btn.textContent = '⏳ 初始化并启动中...';
+  try {
+    const resp = await fetchJSON('/api/init_model_with_fallback', 'POST', {
+      model: _pendingInitModel.model
+    });
+    if (resp.status === 'ok') {
+      showToast('✅ 已初始化「' + _pendingInitModel.shortName + '」并加载', 'success', 6000);
+      document.getElementById('init-model-modal').style.display = 'none';
+      _pendingInitModel = null;
+      // 重新拉 defaults 卡片 (新模型已加入)
+      await loadDefaults();
+      // 重新拉全局状态
+      setTimeout(refresh, 1500);
+    } else {
+      showToast('初始化失败: ' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('初始化失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✨ 初始化并启动';
   }
 }
 

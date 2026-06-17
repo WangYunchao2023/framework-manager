@@ -7,6 +7,12 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.7
 
 更新日志:
+- v1.1.7-patch6: 修复 ollama 刚切换后加载报错 (Connection refused)
+  - 根因: switch_framework_to 启动 ollama.service 后不等待 API 就绪
+            用户立即点加载, ollama API 还没起来, urlopen 报错
+  - 修复: ollama 加载前轮询 /api/tags, 最多等 30 秒
+  - 进度条: 等侍期间 progress=10, 让用户看到状态
+  - 验证: 手动停 ollama → 切到 ollama → 点加载 → 3s 后 API 就绪 → 成功加载
 - v1.1.7-patch5: 删除「➖ 移除模型出列表」按钮 (被模态框覆盖)
   - 原因: 「➕ 添加/移除模型」模态框已能承担移除功能 (取消勾选)
   - HTML: 合并 2 个按钮为 1 个 (按钮文字改为「➕ 添加/移除模型进列表」)
@@ -805,6 +811,18 @@ def load_model_for_framework(model_name):
     if current_framework == "ollama":
         import urllib.request
         import urllib.error
+
+        # v1.1.7-patch6: 修复 ollama 刚切换后 API 未就绪导致 Connection refused
+        # 轮询 /api/tags 等待就绪, 最多 30 秒
+        for _ in range(30):
+            try:
+                urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1).close()
+                break
+            except Exception:
+                _loading_state.update({"message": f"等 Ollama API 就绪...", "progress": 10})
+                time.sleep(1)
+        else:
+            return False, "Ollama API 30 秒未就绪, 请检查 ollama.service 状态"
 
         # 检查模型是否在列表中（允许部分匹配）
         model_matched = False

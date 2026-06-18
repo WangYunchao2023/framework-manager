@@ -4,9 +4,14 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.8
+版本：1.1.9
 
 更新日志:
+- v1.1.9: 多框架三层参数体系 (ComfyUI + Ollama 对齐 beellama)
+  - 整合 patch1: ComfyUI 启动参数 + 模型路径管理
+  - 整合 patch2: Ollama 三层参数 (global + per-model Modelfile + defaults)
+  - 完成后三个框架都支持多层参数设置
+  - 代码相对 v1.1.8-patch2 无任何改动
 - v1.1.8-patch2: Ollama 三层参数 (global + per-model Modelfile + defaults)
   - 架构: 与 beellama 三层对齐
   - global: /api/ollama_global_params (GET/POST) - KEEP_ALIVE/NUM_PARALLEL/BATCH_SIZE/GPU_LAYERS/FLASH_ATTENTION

@@ -4,9 +4,18 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.7
+版本：1.1.8
 
 更新日志:
+- v1.1.8: 升版基线 (整合 v1.1.7-patch1..7 修复)
+  - 整合 patch1: 修正「模型 & 参数」位置提示为各框架规范路径
+  - 整合 patch2: 拆「隐藏」按钮为「➕ 添加 / ➖ 移除」两个
+  - 整合 patch3: 「➕ 添加模型进列表」改为弹模态框 + 复选框选择
+  - 整合 patch4: 修复 refresh() 未同步 currentFramework 全局变量
+  - 整合 patch5: 删除「➖ 移除模型出列表」按钮 (被模态框覆盖)
+  - 整合 patch6: 修复 ollama 刚切换后加载报错 (Connection refused)
+  - 整合 patch7: 加载不同模型后「默认值」卡片不刷新
+  - 说明: 仅作版本基线, 代码相对 v1.1.7-patch7 无任何改动
 - v1.1.7-patch7: 加载不同模型后「默认值」卡片不刷新
   - 症状: beellama 加载 gemma-4-26b 后, defaults 卡片仍显示上一个模型 (如 qwen3.6-q3)
   - 根因: refresh() 只更新 JS currentModel 变量和 DOM, 不重渲染 defaults 卡片

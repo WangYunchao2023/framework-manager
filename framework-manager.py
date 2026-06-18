@@ -4,9 +4,12 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.9
+版本：1.1.10
 
 更新日志:
+- v1.1.10: Bug fixes 升版 (全量测试发现)
+  - 整合 v1.1.8-patch3 (3 个 bug fix: ollama dedupe + timeout 180s + gemma alias)
+  - 代码相对 v1.1.8-patch3 无任何改动
 - v1.1.8-patch3: Bug fixes (从全量测试中发现)
   - Bug 1: ollama 下拉框同时显示基础名 + 衍生 tag, 用户选基础名会跳过 per-model num_ctx 配置
     - 根因: get_ollama_models() 未隐藏基础名, 保留全部 tag

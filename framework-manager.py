@@ -7,6 +7,16 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.8
 
 更新日志:
+- v1.1.8-patch1: ComfyUI 启动参数 + 模型路径管理
+  - 新增 API: /api/comfyui_params (GET/POST) - LowVRAM/GPU only/listen/preview_method
+  - 新增 API: /api/comfyui_extra_paths (GET/PUT) - base_path + custom_paths (yaml)
+  - 启动参数: 写 ~/.config/systemd/user/comfyui.service + daemon-reload + restart
+  - 模型路径: 写 /data/ComfyUI/extra_model_paths.yaml + restart + 重扫模型
+  - get_comfyui_models: 优先从 yaml 读, 未配置则 fall back 到硬编码列表
+  - HTML: 「⚙️ ComfyUI 启动参数」+「📂 ComfyUI 模型路径」两卡片 (仅在切到 comfyui 时显示)
+  - 参数儲存位置: framework-manager.json 的 framework_params.comfyui.global
+  - 未动: comfyui service 启动 / 加载模型 / pipeline 逻辑
+  - 未动: beellama / ollama 所有逻辑
 - v1.1.8: 升版基线 (整合 v1.1.7-patch1..7 修复)
   - 整合 patch1: 修正「模型 & 参数」位置提示为各框架规范路径
   - 整合 patch2: 拆「隐藏」按钮为「➕ 添加 / ➖ 移除」两个
@@ -175,6 +185,12 @@ DEFAULTS_FILE = os.path.join(CONFIG_DIR, "framework-manager-defaults.json")
 # 隐藏模型列表 (v1.1.7 新增): 从下拉框中隐藏但不删除文件
 # 结构: {beellama: [path1, ...], ollama: [name1, ...], comfyui: [path1, ...]}
 HIDDEN_MODELS_FILE = os.path.join(CONFIG_DIR, "framework-manager-hidden.json")
+
+# v1.1.8 新增: ComfyUI 相关路径
+COMFYUI_DIR = "/data/ComfyUI"  # 实际部署路径
+COMFYUI_EXTRA_PATHS_YAML = os.path.join(COMFYUI_DIR, "extra_model_paths.yaml")
+COMFYUI_USER_SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
+COMFYUI_SERVICE_FILE = os.path.join(COMFYUI_USER_SERVICE_DIR, "comfyui.service")
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -498,20 +514,41 @@ def get_beellama_models():
 def get_comfyui_models():
     """扫描 ComfyUI 模型，支持子目录和多种模型类型
     v1.1.7: 加 /data/ComfyUI/models 实际部署路径, 原来只扫 ~/ComfyUI (源码) 扫不到任何实际模型
+    v1.1.8: 优先从 extra_model_paths.yaml 读 base_path + custom_paths, 未配置则 fall back 到硬编码列表
     """
-    model_dirs = [
-        # 实际部署路径 (优先)
-        Path("/data/ComfyUI/models/checkpoints"),
-        Path("/data/ComfyUI/models/diffusers"),
-        Path("/data/ComfyUI/models/unet"),
-        Path("/data/ComfyUI/models/gguf"),
-        Path("/data/ComfyUI/models/diffusion_models"),
-        Path("/data/ComfyUI/models/loras"),
-        # 源码 demo 路径 (兼容, 旧脚本)
-        Path.home() / "ComfyUI" / "models" / "checkpoints",
-        Path.home() / "ComfyUI" / "models" / "diffusers",
-        Path.home() / "ComfyUI" / "models" / "unet",
-    ]
+    # v1.1.8: 优先从 yaml 读路径
+    yaml_cfg = _read_comfyui_yaml()
+    yaml_based = False
+    model_dirs = []
+    if yaml_cfg and yaml_cfg.get("base_path"):
+        base = Path(yaml_cfg["base_path"])
+        # base_path 默认包含 models/{checkpoints,gguf,diffusion_models,loras}
+        for sub in ("checkpoints", "gguf", "diffusion_models", "loras", "diffusers", "unet"):
+            d = base / "models" / sub
+            if d.exists():
+                model_dirs.append(d)
+                yaml_based = True
+        # custom_paths 直接拼绝对路径
+        for cat, p in (yaml_cfg.get("custom_paths") or {}).items():
+            d = Path(p)
+            if d.exists():
+                model_dirs.append(d)
+                yaml_based = True
+    if not yaml_based:
+        # 兼容: 未配 yaml 时使用硬编码列表
+        model_dirs = [
+            # 实际部署路径 (优先)
+            Path("/data/ComfyUI/models/checkpoints"),
+            Path("/data/ComfyUI/models/diffusers"),
+            Path("/data/ComfyUI/models/unet"),
+            Path("/data/ComfyUI/models/gguf"),
+            Path("/data/ComfyUI/models/diffusion_models"),
+            Path("/data/ComfyUI/models/loras"),
+            # 源码 demo 路径 (兼容, 旧脚本)
+            Path.home() / "ComfyUI" / "models" / "checkpoints",
+            Path.home() / "ComfyUI" / "models" / "diffusers",
+            Path.home() / "ComfyUI" / "models" / "unet",
+        ]
     models = []
     for model_dir in model_dirs:
         if not model_dir.exists():
@@ -615,6 +652,186 @@ def start_service(service):
         return True
     except Exception as e:
         log.error(f"启动服务 {service} 失败：{e}")
+        return False
+
+
+# ── ComfyUI service / yaml 读写 (v1.1.8 新增) ──────────────────────
+# 原因: 之前启动参数 (--lowvram) 和模型路径都是硬编码, 用户改不动
+# 设计: 参数写 framework-manager.json 的 framework_params.comfyui.global
+#       路径写 extra_model_paths.yaml (ComfyUI 原生支持)
+#       service file 仅存储最简 ExecStart 框架, 具体 flag 由代码动态拼接
+
+_COMFYUI_DEFAULT_PARAMS = {
+    "lowvram": True,        # 默认开启 (匹配当前 service)
+    "gpu_only": False,
+    "listen": False,        # 0.0.0.0 监听 (默认仅 127.0.0.1, 安全)
+    "preview_method": "auto",  # auto | latent2rgb | taesd | none
+}
+
+
+def _read_comfyui_service_execstart():
+    """读 comfyui.service 的 ExecStart 行, 解析出 main.py 的 flag 列表
+    返回: list[str] (不含 'main.py' 也不含 python3)
+    """
+    try:
+        with open(COMFYUI_SERVICE_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("ExecStart="):
+                    # 去掉前缀, 按空白切分
+                    cmd = line[len("ExecStart="):]
+                    parts = cmd.split()
+                    # 跳过第一个 (python 可执行文件)
+                    if parts:
+                        parts = parts[1:]
+                    # 跳过 main.py
+                    if parts and parts[0].endswith("main.py"):
+                        parts = parts[1:]
+                    return parts
+    except Exception:
+        pass
+    return []
+
+
+def _write_comfyui_service_execstart(flags):
+    """重写 comfyui.service 的 ExecStart 行 (保留 [Unit]/[Service] 其他段)
+    flags: list[str] (不含 main.py 也不含 python3)
+    """
+    try:
+        with open(COMFYUI_SERVICE_FILE, 'r') as f:
+            content = f.read()
+        new_line = f"ExecStart=/usr/bin/python3 main.py {' '.join(flags)}".rstrip()
+        # 替换现有的 ExecStart=
+        import re
+        new_content = re.sub(r'^ExecStart=.*$', new_line, content, flags=re.MULTILINE)
+        if 'ExecStart=' not in new_content:
+            # 不存在则追加到 [Service] 段
+            new_content = re.sub(
+                r'(\[[Ss]ervice\])',
+                f'\\1\n{new_line}',
+                new_content,
+                count=1
+            )
+        with open(COMFYUI_SERVICE_FILE, 'w') as f:
+            f.write(new_content)
+        return True
+    except Exception as e:
+        log.error(f"写 comfyui.service 失败: {e}")
+        return False
+
+
+def _flags_to_comfyui_params(flags):
+    """从 flag 列表解析为 params dict (反向提取 _COMFYUI_DEFAULT_PARAMS 字段)
+    未知 flag 保留在 extra_flags, 不丢失
+    """
+    known = {
+        "--lowvram": "lowvram",
+        "--gpu-only": "gpu_only",
+        "--listen": "listen",
+        "--preview-method": "preview_method",
+    }
+    p = _COMFYUI_DEFAULT_PARAMS.copy()
+    p["extra_flags"] = []  # 未知 flag
+    i = 0
+    while i < len(flags):
+        f = flags[i]
+        if f in known and known[f] != "preview_method":
+            p[known[f]] = True
+            i += 1
+        elif f in known and known[f] == "preview_method":
+            if i + 1 < len(flags):
+                p["preview_method"] = flags[i + 1]
+                i += 2
+            else:
+                i += 1
+        elif f == "--lowvram" or f == "--gpu-only" or f == "--listen":
+            # 兜底: bool flag
+            p[known.get(f, f.lstrip("-").replace("-", "_"))] = True
+            i += 1
+        else:
+            # 未知 flag, 保留 (含值)
+            if i + 1 < len(flags) and not flags[i + 1].startswith("-"):
+                p["extra_flags"].extend([f, flags[i + 1]])
+                i += 2
+            else:
+                p["extra_flags"].append(f)
+                i += 1
+    return p
+
+
+def _comfyui_params_to_flags(params):
+    """从 params dict 生成 flag 列表
+    """
+    flags = []
+    if params.get("lowvram"):
+        flags.append("--lowvram")
+    if params.get("gpu_only"):
+        flags.append("--gpu-only")
+    if params.get("listen"):
+        flags.append("--listen")
+    pm = params.get("preview_method")
+    if pm and pm != "auto":
+        flags.extend(["--preview-method", pm])
+    # 追加未知 flag
+    flags.extend(params.get("extra_flags") or [])
+    return flags
+
+
+# ── extra_model_paths.yaml 读写 (v1.1.8 新增) ──────────────────────
+# 结构 (ComfyUI 原生格式):
+#   comfyui:
+#     base_path: /data/ComfyUI
+#     custom_paths:
+#       checkpoints: /path/to/checkpoints
+#       loras: /path/to/loras
+
+_DEFAULT_COMFYUI_YAML = """# ComfyUI 模型路径配置 (framework-manager v1.1.8 自动生成)
+# 修改后需重启 comfyui.service 生效
+# 字段说明:
+#   base_path:    ComfyUI 模型根目录, 子目录 checkpoints/diffusion_models/gguf/loras 自动扫
+#   custom_paths: 额外的分类路径 (key = 分类名, value = 绝对路径)
+comfyui:
+  base_path: /data/ComfyUI
+  custom_paths: {}
+"""
+
+
+def _read_comfyui_yaml():
+    """读 extra_model_paths.yaml, 返回 {base_path, custom_paths}
+    不存在或解析失败: 返回默认值 (不创建, 让调用方决定)
+    """
+    if not os.path.exists(COMFYUI_EXTRA_PATHS_YAML):
+        return None
+    try:
+        import yaml
+        with open(COMFYUI_EXTRA_PATHS_YAML, 'r') as f:
+            data = yaml.safe_load(f) or {}
+        comfy = data.get("comfyui", {}) or {}
+        return {
+            "base_path": comfy.get("base_path", ""),
+            "custom_paths": comfy.get("custom_paths", {}) or {},
+        }
+    except Exception as e:
+        log.error(f"读 extra_model_paths.yaml 失败: {e}")
+        return None
+
+
+def _write_comfyui_yaml(base_path, custom_paths):
+    """写 extra_model_paths.yaml"""
+    try:
+        import yaml
+        data = {
+            "comfyui": {
+                "base_path": base_path,
+                "custom_paths": custom_paths or {},
+            }
+        }
+        with open(COMFYUI_EXTRA_PATHS_YAML, 'w') as f:
+            f.write(_DEFAULT_COMFYUI_YAML.split("# ComfyUI 模型路径配置")[0])  # 注释行
+            yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        return True
+    except Exception as e:
+        log.error(f"写 extra_model_paths.yaml 失败: {e}")
         return False
 
 def detect_current_framework():
@@ -1476,6 +1693,133 @@ def api_set_beellama_model_params():
     audit_log("设置 beellama 模型参数", f"model={model_name}, ctx={data.get('ctx_size')}, parallel={data.get('parallel')}, ngl={data.get('ngpu_layers')}", "ok")
     return jsonify({"status": "ok", "model": model_name, "params": config["framework_params"]["beellama"]["models"][model_name]})
 
+
+# ── ComfyUI 全局参数 API (v1.1.8 新增) ─────────────────────────
+# 读 framework-manager.json 的 framework_params.comfyui.global
+# 写 service file + daemon-reload + restart
+
+@app.route("/api/comfyui_params", methods=["GET"])
+def api_get_comfyui_params():
+    """获取 ComfyUI 启动参数
+    优先从 framework-manager.json 读, 缺失字段从当前 service file 提取
+    """
+    config = load_config()
+    saved = config.get("framework_params", {}).get("comfyui", {}).get("global", {})
+    # 服务运行时不可靠读 (字段可能跟 config 不一致), 以 config 为准 + service 作 fallback
+    flags = _read_comfyui_service_execstart()
+    runtime = _flags_to_comfyui_params(flags)
+    # 合并: config 优先, 缺失字段用 runtime 填
+    merged = _COMFYUI_DEFAULT_PARAMS.copy()
+    merged.update(runtime)
+    merged.update(saved)
+    return jsonify(merged)
+
+
+@app.route("/api/comfyui_params", methods=["POST"])
+def api_set_comfyui_params():
+    """保存 ComfyUI 启动参数 → 写 service file → daemon-reload → restart
+    字段: lowvram / gpu_only / listen / preview_method / extra_flags
+    """
+    if current_framework != "comfyui":
+        return jsonify({"error": "当前不是 ComfyUI 框架 (参数可存但不能改 service)"}), 400
+    data = request.get_json(silent=True) or {}
+    # 验证
+    valid_keys = {"lowvram", "gpu_only", "listen", "preview_method", "extra_flags"}
+    unknown = set(data.keys()) - valid_keys
+    if unknown:
+        return jsonify({"error": f"未知字段: {unknown}"}), 400
+    pm = data.get("preview_method", "auto")
+    if pm not in ("auto", "latent2rgb", "taesd", "none"):
+        return jsonify({"error": f"preview_method 必须是 auto/latent2rgb/taesd/none"}), 400
+
+    # 1) 写 config
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "comfyui" not in config["framework_params"]:
+        config["framework_params"]["comfyui"] = {"global": {}}
+    if "global" not in config["framework_params"]["comfyui"]:
+        config["framework_params"]["comfyui"]["global"] = {}
+    cfg_global = config["framework_params"]["comfyui"]["global"]
+    for k in valid_keys:
+        if k in data:
+            cfg_global[k] = data[k]
+    save_config(config)
+
+    # 2) 写 service file
+    flags = _comfyui_params_to_flags(cfg_global)
+    if not _write_comfyui_service_execstart(flags):
+        return jsonify({"error": "写 comfyui.service 失败"}), 500
+
+    # 3) daemon-reload + restart
+    run_cmd("systemctl --user daemon-reload", timeout=5)
+    if not stop_service(COMFYUI_SERVICE):
+        return jsonify({"error": "停止 comfyui 失败"}), 500
+    if not start_service(COMFYUI_SERVICE):
+        return jsonify({"error": "启动 comfyui 失败"}), 500
+    audit_log("保存 ComfyUI 启动参数", f"flags={flags}", "ok")
+    return jsonify({"status": "ok", "params": cfg_global, "flags": flags, "message": "已保存并重启 ComfyUI"})
+
+
+@app.route("/api/comfyui_extra_paths", methods=["GET"])
+def api_get_comfyui_extra_paths():
+    """读 extra_model_paths.yaml
+    不存在: 返回默认建议 (不创建文件)
+    """
+    yaml_cfg = _read_comfyui_yaml()
+    if yaml_cfg is None:
+        return jsonify({
+            "exists": False,
+            "base_path": COMFYUI_DIR,
+            "custom_paths": {},
+            "default_base": COMFYUI_DIR,
+        })
+    return jsonify({
+        "exists": True,
+        "base_path": yaml_cfg["base_path"],
+        "custom_paths": yaml_cfg["custom_paths"],
+        "default_base": COMFYUI_DIR,
+    })
+
+
+@app.route("/api/comfyui_extra_paths", methods=["PUT"])
+def api_set_comfyui_extra_paths():
+    """保存 extra_model_paths.yaml → 写文件 → restart ComfyUI → 重扫模型
+    body: {base_path: str, custom_paths: {cat: path, ...}}
+    """
+    if current_framework != "comfyui":
+        return jsonify({"error": "当前不是 ComfyUI 框架"}), 400
+    data = request.get_json(silent=True) or {}
+    base_path = (data.get("base_path") or "").strip()
+    custom_paths = data.get("custom_paths") or {}
+    if not base_path:
+        return jsonify({"error": "base_path 不能为空"}), 400
+    if not base_path.startswith("/"):
+        return jsonify({"error": "base_path 必须是绝对路径"}), 400
+    if not isinstance(custom_paths, dict):
+        return jsonify({"error": "custom_paths 必须是 dict"}), 400
+    # 写 yaml
+    if not _write_comfyui_yaml(base_path, custom_paths):
+        return jsonify({"error": "写 extra_model_paths.yaml 失败"}), 500
+    # restart
+    if not stop_service(COMFYUI_SERVICE):
+        return jsonify({"error": "停止 comfyui 失败"}), 500
+    if not start_service(COMFYUI_SERVICE):
+        return jsonify({"error": "启动 comfyui 失败"}), 500
+    # 清模型缓存强制重扫
+    global _model_cache, _cache_timestamps
+    _model_cache.pop("comfyui", None)
+    _cache_timestamps.pop("comfyui", None)
+    new_models = get_comfyui_models()
+    audit_log("保存 ComfyUI 模型路径", f"base={base_path}, custom={list(custom_paths.keys())}, models={len(new_models)}", "ok")
+    return jsonify({
+        "status": "ok",
+        "base_path": base_path,
+        "custom_paths": custom_paths,
+        "models": new_models,
+        "message": f"已保存并重启 ComfyUI, 扫描到 {len(new_models)} 个模型"
+    })
+
 @app.route("/api/set_pending_model", methods=["POST"])
 def api_set_pending_model():
     """设置 beellama 重启后自动加载的模型"""
@@ -1972,6 +2316,63 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>turbo3</b>: 速度快/功耗低 (~100W)，但长对话可能乱码 · <b>f16</b>: 稳定不乱码/功耗高 (~200W) · 修改后需重启 beellama
 </p>
 </div>
+<!-- ⚙️ ComfyUI 参数设置 (v1.1.8 新增, 切换到 comfyui 时显示) -->
+<div class="card" id="comfyui-params-card" style="display:none;">
+<h2>⚙️ ComfyUI 启动参数</h2>
+<div class="form-row">
+  <div class="form-group">
+    <label><input type="checkbox" id="comfyui-lowvram" style="width:auto;margin-right:6px;">LowVRAM 模式</label>
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" id="comfyui-gpu-only" style="width:auto;margin-right:6px;">GPU only</label>
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" id="comfyui-listen" style="width:auto;margin-right:6px;">对外监听 (0.0.0.0)</label>
+  </div>
+  <div class="form-group">
+    <label>预览方式</label>
+    <select id="comfyui-preview-method" style="min-width:140px;">
+      <option value="auto">auto (默认)</option>
+      <option value="latent2rgb">latent2rgb (快)</option>
+      <option value="taesd">taesd (质量高)</option>
+      <option value="none">none (不预览)</option>
+    </select>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn success" onclick="saveComfyuiParams()" id="btn-save-comfyui-params">💾 保存并重启 ComfyUI</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>LowVRAM</b>: 分块加载, 22GB 卡开 17GB 模型建议开启 · <b>GPU only</b>: 一切丢 GPU (需 ≥24GB) · 修改后重启 ComfyUI
+</p>
+</div>
+<!-- 📂 ComfyUI 模型路径 (v1.1.8 新增, 切换到 comfyui 时显示) -->
+<div class="card" id="comfyui-paths-card" style="display:none;">
+<h2>📂 ComfyUI 模型路径</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+配置文件: <code>/data/ComfyUI/extra_model_paths.yaml</code> · 修改后重启 ComfyUI 并自动重扫模型列表
+</p>
+<div class="form-row" style="margin-top:0;">
+  <div class="form-group" style="flex:1;">
+    <label>base_path (模型根目录, 自动扫 models/{checkpoints,gguf,diffusion_models,loras})</label>
+    <input type="text" id="comfyui-base-path" placeholder="/data/ComfyUI" style="min-width:300px;width:100%;">
+  </div>
+</div>
+<div class="form-row" style="margin-top:8px;">
+  <div class="form-group" style="flex:1;">
+    <label>custom_paths (额外分类路径, 格式: <code>分类: 绝对路径</code> 一行一条)</label>
+    <textarea id="comfyui-custom-paths" rows="4" style="min-width:300px;width:100%;font-family:monospace;font-size:0.85rem;" placeholder="checkpoints: /data/models/extra_checkpoints
+loras: /home/wangyc/my_loras"></textarea>
+  </div>
+</div>
+<div class="form-group" style="justify-content:flex-end;margin-top:8px;">
+  <button class="btn" onclick="loadComfyuiPaths()" id="btn-reload-comfyui-paths">🔄 从 yaml 重读</button>
+  <button class="btn success" onclick="saveComfyuiPaths()" id="btn-save-comfyui-paths" style="margin-left:8px;">💾 保存并重启 ComfyUI</button>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>base_path</b> 必填 (绝对路径) · <b>custom_paths</b> 可选, 每行 <code>key: path</code>, key 需在 ComfyUI 已知分类中 (checkpoints/loras/vae/controlnet 等)
+</p>
+</div>
 <!-- 📦 模型专属参数卡片 (加载模型后显示) -->
 <div class="card relative-card" id="beellama-model-params-card" style="display:none;">
 <h2>📦 模型专属参数：<span id="model-params-model-name"></span></h2>
@@ -2232,6 +2633,20 @@ async function refresh() {
         loadBeellamaParams();
       } else {
         paramsCard.style.display = 'none';
+      }
+    }
+    // ⚙️ 显示/隐藏 comfyui 参数卡片 (v1.1.8)
+    var comfyuiParamsCard = document.getElementById('comfyui-params-card');
+    var comfyuiPathsCard = document.getElementById('comfyui-paths-card');
+    if (comfyuiParamsCard && comfyuiPathsCard) {
+      if (fw === 'comfyui') {
+        comfyuiParamsCard.style.display = 'block';
+        comfyuiPathsCard.style.display = 'block';
+        loadComfyuiParams();
+        loadComfyuiPaths();
+      } else {
+        comfyuiParamsCard.style.display = 'none';
+        comfyuiPathsCard.style.display = 'none';
       }
     }
     // 📦 模型专属参数卡片：仅当加载了 beellama 模型时显示（保存中保持可见）
@@ -2736,11 +3151,11 @@ async function saveBeellamaParams() {
   const turboLevel = document.getElementById('beellama-turbo-level').value;
   const flashAttn = document.getElementById('beellama-flash-attn').value === 'true';
   const reasoningOff = document.getElementById('beellama-reasoning-off').value === 'true';
-  
+
   const btn = document.getElementById('btn-save-beellama-params');
   btn.disabled = true;
   btn.textContent = '⏳ 重启中...';
-  
+
   try {
     const resp = await fetchJSON('/api/beellama_params', 'POST', {
       turbo_level: turboLevel,
@@ -2764,6 +3179,110 @@ async function saveBeellamaParams() {
     showToast('保存失败：' + e.message, 'error');
     btn.disabled = false;
     btn.textContent = '💾 保存并重启 beellama';
+  }
+}
+
+// ⚙️ ComfyUI 启动参数 (v1.1.8)
+async function loadComfyuiParams() {
+  try {
+    const data = await fetchJSON('/api/comfyui_params');
+    document.getElementById('comfyui-lowvram').checked = !!data.lowvram;
+    document.getElementById('comfyui-gpu-only').checked = !!data.gpu_only;
+    document.getElementById('comfyui-listen').checked = !!data.listen;
+    document.getElementById('comfyui-preview-method').value = data.preview_method || 'auto';
+  } catch (e) {
+    console.error('加载 ComfyUI 参数失败:', e);
+  }
+}
+
+async function saveComfyuiParams() {
+  const btn = document.getElementById('btn-save-comfyui-params');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重启中...';
+  try {
+    const resp = await fetchJSON('/api/comfyui_params', 'POST', {
+      lowvram: document.getElementById('comfyui-lowvram').checked,
+      gpu_only: document.getElementById('comfyui-gpu-only').checked,
+      listen: document.getElementById('comfyui-listen').checked,
+      preview_method: document.getElementById('comfyui-preview-method').value,
+    });
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || 'ComfyUI 参数已保存并重启'), 'success', 5000);
+      setTimeout(refresh, 3000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存并重启 ComfyUI';
+  }
+}
+
+// 📂 ComfyUI 模型路径 (v1.1.8)
+async function loadComfyuiPaths() {
+  try {
+    const data = await fetchJSON('/api/comfyui_extra_paths');
+    document.getElementById('comfyui-base-path').value = data.base_path || data.default_base || '';
+    // custom_paths dict → textarea 格式 (key: path 一行一条)
+    const lines = [];
+    for (const [k, v] of Object.entries(data.custom_paths || {})) {
+      lines.push(k + ': ' + v);
+    }
+    document.getElementById('comfyui-custom-paths').value = lines.join('\n');
+    if (!data.exists) {
+      showToast('ℹ️ extra_model_paths.yaml 不存在, 保存将创建默认', 'info', 3000);
+    }
+  } catch (e) {
+    console.error('加载 ComfyUI 路径失败:', e);
+    showToast('加载失败: ' + e.message, 'error');
+  }
+}
+
+function _parseCustomPaths(text) {
+  // 解析 textarea 为 {key: path, ...}
+  // 格式: 每行 "key: path", 忽略空行和 # 开头注释
+  const result = {};
+  for (const raw of (text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf(':');
+    if (idx < 0) continue;
+    const key = line.slice(0, idx).trim();
+    const path = line.slice(idx + 1).trim();
+    if (key && path) result[key] = path;
+  }
+  return result;
+}
+
+async function saveComfyuiPaths() {
+  const btn = document.getElementById('btn-save-comfyui-paths');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重启中...';
+  try {
+    const basePath = document.getElementById('comfyui-base-path').value.trim();
+    if (!basePath) {
+      showToast('base_path 不能为空', 'error');
+      return;
+    }
+    const customPaths = _parseCustomPaths(document.getElementById('comfyui-custom-paths').value);
+    const resp = await fetchJSON('/api/comfyui_extra_paths', 'PUT', {
+      base_path: basePath,
+      custom_paths: customPaths,
+    });
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || '路径已保存'), 'success', 5000);
+      // 重扫后模型列表会变, 触发全局 refresh
+      setTimeout(refresh, 3000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存并重启 ComfyUI';
   }
 }
 

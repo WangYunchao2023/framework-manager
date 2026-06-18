@@ -7,6 +7,19 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.8
 
 更新日志:
+- v1.1.8-patch2: Ollama 三层参数 (global + per-model Modelfile + defaults)
+  - 架构: 与 beellama 三层对齐
+  - global: /api/ollama_global_params (GET/POST) - KEEP_ALIVE/NUM_PARALLEL/BATCH_SIZE/GPU_LAYERS/FLASH_ATTENTION
+    - 写 ~/.config/systemd/user/ollama.service.d/override.conf (保留 HOST/MODELS + 注释)
+    - daemon-reload + restart + 等侍 API 就绪
+  - per-model: /api/ollama_model_params (GET/POST) - num_ctx(主) + temperature/top_p/top_k/repeat_penalty
+    - 写 /data/ollama/models/modelfiles/<name>.Modelfile
+    - num_ctx 改变会创建新 tag (e.g. ctx128k→ctx256k), 调 ollama create 重建
+    - 旧 tag 不删 (用户手动选择)
+  - defaults: /api/ollama_defaults (GET/POST) - 复用 framework-manager-defaults.json 的 ollama 段
+  - 恢复默认: /api/restore_ollama_default_model_params (POST) - 读 defaults → 写 Modelfile → 重建 tag
+  - HTML: 「⚙️ Ollama 全局参数」+「📦 Ollama 模型专属参数」+「🎯 Ollama 默认值」三卡片 (仅切到 ollama 时显示)
+  - 未动: beellama / comfyui / ollama 加载模型 / ollama system service pipeline
 - v1.1.8-patch1: ComfyUI 启动参数 + 模型路径管理
   - 新增 API: /api/comfyui_params (GET/POST) - LowVRAM/GPU only/listen/preview_method
   - 新增 API: /api/comfyui_extra_paths (GET/PUT) - base_path + custom_paths (yaml)
@@ -156,7 +169,7 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
   空闲超时自动回退默认设置，操作日志审计与 Web UI 显示，队列监控
 """
 
-import os, sys, json, time, subprocess, signal, threading, logging
+import os, sys, json, time, subprocess, signal, threading, logging, re
 from pathlib import Path
 from datetime import datetime
 
@@ -191,6 +204,12 @@ COMFYUI_DIR = "/data/ComfyUI"  # 实际部署路径
 COMFYUI_EXTRA_PATHS_YAML = os.path.join(COMFYUI_DIR, "extra_model_paths.yaml")
 COMFYUI_USER_SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
 COMFYUI_SERVICE_FILE = os.path.join(COMFYUI_USER_SERVICE_DIR, "comfyui.service")
+
+# v1.1.8-patch2 新增: Ollama 相关路径
+OLLAMA_OVERRIDE_DIR = os.path.expanduser("~/.config/systemd/user/ollama.service.d")
+OLLAMA_OVERRIDE_FILE = os.path.join(OLLAMA_OVERRIDE_DIR, "override.conf")
+OLLAMA_MODELS_DIR = "/data/ollama/models"  # 与 override.conf 中 OLLAMA_MODELS 一致
+OLLAMA_MODELFILES_DIR = os.path.join(OLLAMA_MODELS_DIR, "modelfiles")
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -833,6 +852,226 @@ def _write_comfyui_yaml(base_path, custom_paths):
     except Exception as e:
         log.error(f"写 extra_model_paths.yaml 失败: {e}")
         return False
+
+
+# ── Ollama service / Modelfile 读写 (v1.1.8-patch2 新增) ────────────────
+# 原因: 之前 systemd 环境变量 + per-model Modelfile 都是手写, WebUI 不可控
+# 设计:
+#   global   - 写 ~/.config/systemd/user/ollama.service.d/override.conf
+#              字段: OLLAMA_KEEP_ALIVE / OLLAMA_NUM_PARALLEL / OLLAMA_BATCH_SIZE
+#                    OLLAMA_GPU_LAYERS / OLLAMA_FLASH_ATTENTION
+#                    (HOST/MODELS 为环境信息, 不从 WebUI 改)
+#   per-model - 写 /data/ollama/models/modelfiles/<name>.Modelfile
+#              字段: num_ctx (主) / temperature / top_p / top_k / repeat_penalty
+#              保存后调 ollama create 重建 tag: <base>-ctx<N>k
+#   defaults - 复用 framework-manager-defaults.json, 加 ollama 段
+#              {ollama: {_fallback: {...}, models: {name: {...}}}}
+
+_OLLAMA_GLOBAL_FIELD_MAP = {
+    # field_name → env_var_name
+    "keep_alive": "OLLAMA_KEEP_ALIVE",
+    "num_parallel": "OLLAMA_NUM_PARALLEL",
+    "batch_size": "OLLAMA_BATCH_SIZE",
+    "gpu_layers": "OLLAMA_GPU_LAYERS",
+    "flash_attention": "OLLAMA_FLASH_ATTENTION",
+}
+_OLLAMA_DEFAULT_GLOBAL = {
+    "keep_alive": "10m",
+    "num_parallel": 1,
+    "batch_size": None,  # 不设
+    "gpu_layers": None,  # 不设
+    "flash_attention": 1,
+}
+
+# per-model Modelfile 字段 (顺序 = 写入顺序)
+_OLLAMA_MODEL_PARAM_FIELDS = [
+    "num_ctx", "temperature", "top_p", "top_k", "repeat_penalty",
+]
+
+
+def _read_ollama_override_conf():
+    """读 override.conf, 解析为 {field_name: value, ...}
+    仅提取白名单字段 (不碰 OLLAMA_HOST/OLLAMA_MODELS 等结构字段)
+    """
+    if not os.path.exists(OLLAMA_OVERRIDE_FILE):
+        return _OLLAMA_DEFAULT_GLOBAL.copy()
+    try:
+        result = _OLLAMA_DEFAULT_GLOBAL.copy()
+        with open(OLLAMA_OVERRIDE_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                m = re.match(r'^Environment="(OLLAMA_[A-Z_]+)=(.+)"$', line)
+                if not m:
+                    continue
+                var, val = m.group(1), m.group(2)
+                for field, ev in _OLLAMA_GLOBAL_FIELD_MAP.items():
+                    if var == ev:
+                        # int 字段尝试转 int
+                        if field in ("num_parallel", "batch_size", "gpu_layers", "flash_attention"):
+                            try:
+                                val = int(val)
+                            except ValueError:
+                                pass
+                        result[field] = val
+        return result
+    except Exception as e:
+        log.error(f"读 override.conf 失败: {e}")
+        return _OLLAMA_DEFAULT_GLOBAL.copy()
+
+
+def _write_ollama_override_conf(params):
+    """写 override.conf (保留 [Service] 头 + 注释, 替换/追加白名单 Environment 行)
+    params: {keep_alive, num_parallel, batch_size, gpu_layers, flash_attention}
+    """
+    try:
+        os.makedirs(OLLAMA_OVERRIDE_DIR, exist_ok=True)
+        # 读现有内容 (保留非白名单 Environment 行 + 注释)
+        existing_lines = []
+        if os.path.exists(OLLAMA_OVERRIDE_FILE):
+            with open(OLLAMA_OVERRIDE_FILE, 'r') as f:
+                existing_lines = f.readlines()
+        # 构建新的白名单行
+        whitelist_vars = set(_OLLAMA_GLOBAL_FIELD_MAP.values())
+        # 过滤现有: 丢弃白名单行, 保留其他
+        kept = []
+        for line in existing_lines:
+            stripped = line.strip()
+            m = re.match(r'^Environment="(OLLAMA_[A-Z_]+)=(.+)"$', stripped)
+            if m and m.group(1) in whitelist_vars:
+                continue
+            kept.append(line)
+        # 拼接新行
+        new_lines = list(kept)
+        # 必要时补充间隔
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] = new_lines[-1] + "\n"
+        if new_lines and new_lines[-1].strip() != "":
+            new_lines.append("\n")
+        for field, ev in _OLLAMA_GLOBAL_FIELD_MAP.items():
+            val = params.get(field)
+            if val is None or val == "":
+                continue
+            new_lines.append(f'Environment="{ev}={val}"\n')
+        with open(OLLAMA_OVERRIDE_FILE, 'w') as f:
+            f.writelines(new_lines)
+        return True
+    except Exception as e:
+        log.error(f"写 override.conf 失败: {e}")
+        return False
+
+
+def _modelfile_path_for(model_name):
+    """model_name (如 qwen3.6-q3:ctx128k) → Modelfile 路径
+    tag 里的 ':' 转为 '-' (文件名合法)
+    """
+    safe = model_name.replace(":", "-").replace("/", "_")
+    return os.path.join(OLLAMA_MODELFILES_DIR, f"{safe}.Modelfile")
+
+
+def _parse_modelfile(path):
+    """读 Modelfile, 解析为 {num_ctx, temperature, top_p, top_k, repeat_penalty, from}
+    不存在返回 None
+    """
+    if not os.path.exists(path):
+        return None
+    try:
+        params = {f: None for f in _OLLAMA_MODEL_PARAM_FIELDS}
+        params["from"] = None
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("FROM "):
+                    params["from"] = line[5:].strip()
+                elif line.startswith("PARAMETER "):
+                    parts = line[len("PARAMETER "):].split(None, 1)
+                    if len(parts) == 2 and parts[0] in _OLLAMA_MODEL_PARAM_FIELDS:
+                        v = parts[1].strip()
+                        # 尝试转 float/int
+                        try:
+                            v = int(v) if "." not in v else float(v)
+                        except ValueError:
+                            pass
+                        params[parts[0]] = v
+        return params
+    except Exception as e:
+        log.error(f"读 Modelfile 失败: {path}: {e}")
+        return None
+
+
+def _write_modelfile(path, params, header_lines=None):
+    """写 Modelfile
+    params: {from, num_ctx, temperature, top_p, top_k, repeat_penalty}
+    header_lines: 顶部注释行列表 (可选)
+    """
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            if header_lines:
+                for hl in header_lines:
+                    f.write("# " + hl + "\n")
+            f.write("\nFROM " + (params.get("from") or "<unknown>") + "\n\n")
+            for field in _OLLAMA_MODEL_PARAM_FIELDS:
+                v = params.get(field)
+                if v is not None and v != "":
+                    f.write(f"PARAMETER {field} {v}\n")
+        return True
+    except Exception as e:
+        log.error(f"写 Modelfile 失败: {path}: {e}")
+        return False
+
+
+def _create_ollama_tag_from_modelfile(modelfile_path, tag_name):
+    """调 ollama create <tag_name> -f <modelfile_path>
+    返回 (ok, msg)
+    """
+    try:
+        r = subprocess.run(
+            ["/home/wangyc/.local/bin/ollama", "create", tag_name, "-f", modelfile_path],
+            capture_output=True, text=True, timeout=120
+        )
+        if r.returncode == 0:
+            return True, r.stdout.strip()
+        return False, r.stderr.strip() or r.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return False, "ollama create 超时 (>120s)"
+    except Exception as e:
+        return False, f"ollama create 失败: {e}"
+
+
+def _tag_from_model_name(model_name):
+    """model_name → tag name (e.g. qwen3.6-q3 + num_ctx=131072 → qwen3.6-q3:ctx128k)
+    规则: ctx round 到 K → 8k/16k/32k/64k/128k/256k
+    """
+    # 不接管已有 tag (如 :ctx128k 结尾) — 直接返回
+    if re.search(r':ctx\d+k$', model_name):
+        return model_name
+    # 否则期望输入是 base 名, 需要额外 ctx; 此函数只负责 round, 调用方拼装
+    raise ValueError("use _make_ollama_tag for base name")
+
+
+def _ctx_to_ollama_tag_suffix(num_ctx):
+    """num_ctx → ctx<N>k 字符串 (8k/16k/32k/64k/128k/256k)
+    不足 8K 补足到 8K, 然后向下取整到最近的幂阶
+    """
+    if not num_ctx or num_ctx < 8192:
+        return "ctx8k"
+    # 允许的阶
+    steps = [8, 16, 32, 64, 128, 256, 512, 1024]
+    k = num_ctx // 1024
+    for s in steps:
+        if k <= s:
+            return f"ctx{s}k"
+    return f"ctx{steps[-1]}k"
+
+
+def _make_ollama_tag(base_name, num_ctx):
+    """base_name + num_ctx → 完整 tag (e.g. qwen3.6-q3 + 131072 → qwen3.6-q3:ctx128k)"""
+    suffix = _ctx_to_ollama_tag_suffix(num_ctx)
+    # base_name 可能已带 :tag, 剥掉
+    base = base_name.split(":")[0]
+    return f"{base}:{suffix}"
 
 def detect_current_framework():
     """检测当前运行的框架，并尝试识别已加载的模型
@@ -1820,6 +2059,255 @@ def api_set_comfyui_extra_paths():
         "message": f"已保存并重启 ComfyUI, 扫描到 {len(new_models)} 个模型"
     })
 
+
+# ── Ollama 全局参数 API (v1.1.8-patch2 新增) ─────────────────────────
+# 写 override.conf + daemon-reload + restart
+# 字段: keep_alive / num_parallel / batch_size / gpu_layers / flash_attention
+
+@app.route("/api/ollama_global_params", methods=["GET"])
+def api_get_ollama_global_params():
+    """获取 Ollama 全局参数
+    优先从 framework-manager.json 读, 缺失字段从 override.conf 读
+    """
+    config = load_config()
+    saved = config.get("framework_params", {}).get("ollama", {}).get("global", {})
+    runtime = _read_ollama_override_conf()
+    merged = _OLLAMA_DEFAULT_GLOBAL.copy()
+    merged.update(runtime)
+    merged.update(saved)
+    return jsonify(merged)
+
+
+@app.route("/api/ollama_global_params", methods=["POST"])
+def api_set_ollama_global_params():
+    """保存 Ollama 全局参数 → 写 override.conf → daemon-reload → restart
+    body: {keep_alive, num_parallel, batch_size, gpu_layers, flash_attention}
+    字段可省略 (省略 = 保留现状); 显式传 null/空 = 删除该 Environment
+    """
+    if current_framework != "ollama":
+        return jsonify({"error": "当前不是 Ollama 框架 (参数可存但不能 restart)"}), 400
+    data = request.get_json(silent=True) or {}
+    valid_keys = set(_OLLAMA_GLOBAL_FIELD_MAP.keys())
+    unknown = set(data.keys()) - valid_keys
+    if unknown:
+        return jsonify({"error": f"未知字段: {unknown}"}), 400
+    # 验证 int 字段
+    for f in ("num_parallel", "batch_size", "gpu_layers", "flash_attention"):
+        if f in data and data[f] is not None and data[f] != "":
+            try:
+                data[f] = int(data[f])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{f} 必须是整数"}), 400
+    # 1) 写 config
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "ollama" not in config["framework_params"]:
+        config["framework_params"]["ollama"] = {"global": {}, "models": {}}
+    if "global" not in config["framework_params"]["ollama"]:
+        config["framework_params"]["ollama"]["global"] = {}
+    cfg_global = config["framework_params"]["ollama"]["global"]
+    for k in valid_keys:
+        if k in data:
+            cfg_global[k] = data[k] if data[k] != "" else None
+    save_config(config)
+    # 2) 写 override.conf (从 runtime 读现有值 + cfg_global 覆盖)
+    runtime = _read_ollama_override_conf()
+    merged = runtime.copy()
+    for k in valid_keys:
+        if k in cfg_global:
+            merged[k] = cfg_global[k]
+    if not _write_ollama_override_conf(merged):
+        return jsonify({"error": "写 override.conf 失败"}), 500
+    # 3) daemon-reload + restart
+    run_cmd("systemctl --user daemon-reload", timeout=5)
+    if not stop_service(OLLAMA_SERVICE):
+        return jsonify({"error": "停止 ollama 失败"}), 500
+    if not start_service(OLLAMA_SERVICE):
+        return jsonify({"error": "启动 ollama 失败"}), 500
+    # 4) 等侍 API 就绪 (复用 patch6 逻辑)
+    import urllib.request
+    for _ in range(30):
+        try:
+            urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1).close()
+            break
+        except Exception:
+            time.sleep(1)
+    audit_log("保存 Ollama 全局参数", f"params={cfg_global}", "ok")
+    return jsonify({"status": "ok", "params": cfg_global, "message": "已保存并重启 Ollama"})
+
+
+# ── Ollama per-model Modelfile API (v1.1.8-patch2 新增) ─────────────────
+# 读: 从 Modelfile 读参数
+# 写: 写 Modelfile → ollama create 重建 tag (如 qwen3.6-q3:ctx128k)
+# 注意: num_ctx 改变会生成新 tag (e.g. ctx64k→ctx128k), 旧 tag 保留不删
+
+@app.route("/api/ollama_model_params", methods=["GET"])
+def api_get_ollama_model_params():
+    """获取指定 ollama 模型的 Modelfile 参数
+    query: ?model=xxx (默认 current_model)
+    """
+    model = request.args.get("model") or current_model
+    if not model:
+        return jsonify({"error": "未指定 model"}), 400
+    mf_path = _modelfile_path_for(model)
+    parsed = _parse_modelfile(mf_path)
+    if parsed is None:
+        return jsonify({
+            "model": model,
+            "modelfile_path": mf_path,
+            "exists": False,
+            "params": {f: None for f in _OLLAMA_MODEL_PARAM_FIELDS},
+            "from": None,
+        })
+    return jsonify({
+        "model": model,
+        "modelfile_path": mf_path,
+        "exists": True,
+        "params": {f: parsed.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
+        "from": parsed.get("from"),
+    })
+
+
+@app.route("/api/ollama_model_params", methods=["POST"])
+def api_set_ollama_model_params():
+    """保存 ollama per-model 参数 → 写 Modelfile → ollama create 重建 tag
+    body: {model, num_ctx, temperature, top_p, top_k, repeat_penalty}
+    - num_ctx 必填, 改变会创建新 tag (e.g. ctx128k→ctx256k)
+    - 其他字段可省略 (保留原值) 或 传 null/0 (从 Modelfile 删除)
+    """
+    if current_framework != "ollama":
+        return jsonify({"error": "当前不是 Ollama 框架"}), 400
+    data = request.get_json(silent=True) or {}
+    model = data.get("model") or current_model
+    if not model:
+        return jsonify({"error": "未指定 model"}), 400
+    num_ctx = data.get("num_ctx")
+    if num_ctx is None or num_ctx == "":
+        return jsonify({"error": "num_ctx 必填 (决定 tag 后缀)"}), 400
+    try:
+        num_ctx = int(num_ctx)
+    except (TypeError, ValueError):
+        return jsonify({"error": "num_ctx 必须是整数"}), 400
+    if num_ctx < 512 or num_ctx > 1048576:
+        return jsonify({"error": "num_ctx 范围 512-1048576"}), 400
+    # 读现有参数 (用于保留未指定的字段)
+    mf_path = _modelfile_path_for(model)
+    existing = _parse_modelfile(mf_path) or {f: None for f in _OLLAMA_MODEL_PARAM_FIELDS}
+    existing["from"] = existing.get("from") or model.split(":")[0] + ":latest"
+    # 验证其他字段
+    for f in ("temperature", "top_p", "top_k", "repeat_penalty"):
+        if f in data and data[f] is not None and data[f] != "":
+            try:
+                data[f] = float(data[f])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{f} 必须是数字"}), 400
+    # 更新参数
+    new_params = dict(existing)
+    new_params["num_ctx"] = num_ctx
+    for f in ("temperature", "top_p", "top_k", "repeat_penalty"):
+        if f in data:
+            new_params[f] = data[f] if data[f] != "" and data[f] != 0 else None
+    # 写 Modelfile
+    base_name = model.split(":")[0]
+    new_params["from"] = existing["from"]  # 保持 FROM 指向
+    header = [
+        f"模型 {model} 参数配置 (framework-manager v1.1.8-patch2)",
+        f"FROM: {new_params['from']}",
+        f"num_ctx: {new_params['num_ctx']} → tag: {_make_ollama_tag(base_name, num_ctx)}",
+    ]
+    if not _write_modelfile(mf_path, new_params, header_lines=header):
+        return jsonify({"error": "写 Modelfile 失败"}), 500
+    # ollama create 重建 tag
+    new_tag = _make_ollama_tag(base_name, num_ctx)
+    ok, msg = _create_ollama_tag_from_modelfile(mf_path, new_tag)
+    audit_log("保存 ollama 模型参数", f"model={model}, tag={new_tag}, ok={ok}", "ok" if ok else "fail")
+    if not ok:
+        return jsonify({
+            "status": "partial",
+            "warning": f"Modelfile 已写但 ollama create 失败: {msg}",
+            "modelfile": mf_path,
+            "intended_tag": new_tag,
+            "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
+        }), 500
+    return jsonify({
+        "status": "ok",
+        "model": model,
+        "modelfile": mf_path,
+        "tag": new_tag,
+        "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
+        "message": f"已保存 {model} 参数并重建 tag {new_tag}"
+    })
+
+
+# ── Ollama defaults API (v1.1.8-patch2 新增) ──────────────────────────
+# 复用 framework-manager-defaults.json, 加 ollama 段
+# 结构: {ollama: {_fallback: {...}, models: {name: {...}}}}
+
+@app.route("/api/ollama_defaults", methods=["GET"])
+def api_get_ollama_defaults():
+    defaults = _load_defaults()
+    return jsonify(defaults.get("ollama", {"_fallback": {}, "models": {}}))
+
+
+@app.route("/api/ollama_defaults", methods=["POST"])
+def api_set_ollama_defaults():
+    data = request.get_json(silent=True) or {}
+    if "_fallback" not in data or "models" not in data:
+        return jsonify({"error": "需包含 _fallback 和 models"}), 400
+    # 轻量验证
+    for k in _OLLAMA_MODEL_PARAM_FIELDS:
+        v = data["_fallback"].get(k)
+        if v is not None and v != "" and not isinstance(v, (int, float)):
+            return jsonify({"error": f"_fallback.{k} 必须是数字或 null"}), 400
+    for name, p in data["models"].items():
+        for k in _OLLAMA_MODEL_PARAM_FIELDS:
+            v = p.get(k)
+            if v is not None and v != "" and not isinstance(v, (int, float)):
+                return jsonify({"error": f"models.{name}.{k} 必须是数字或 null"}), 400
+    defaults = _load_defaults()
+    defaults["ollama"] = data
+    if not _save_defaults(defaults):
+        return jsonify({"error": "保存失败"}), 500
+    audit_log("保存 ollama defaults", f"fallback={data['_fallback']}, models={list(data['models'].keys())}", "ok")
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/restore_ollama_default_model_params", methods=["POST"])
+def api_restore_ollama_default_model_params():
+    """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
+    复用 api_set_ollama_model_params 的逻辑 (传入 num_ctx 等于从 defaults 读)
+    """
+    if current_framework != "ollama":
+        return jsonify({"error": "当前不是 Ollama 框架"}), 400
+    data = request.get_json(silent=True) or {}
+    model = data.get("model") or current_model
+    if not model:
+        return jsonify({"error": "未指定 model"}), 400
+    base_name = model.split(":")[0]
+    defaults = _load_defaults().get("ollama", {})
+    model_defaults = defaults.get("models", {}).get(base_name)
+    if not model_defaults:
+        return jsonify({
+            "error": f"ollama defaults 中没有「{base_name}」记录, 请先在「🎯 ollama 默认值」卡中编辑",
+            "short_name": base_name,
+            "missing_in_defaults": True,
+        }), 404
+    # 复用 set_ollama_model_params (内含 Modelfile 写 + ollama create)
+    payload = dict(model_defaults)
+    payload["model"] = model
+    # 调内部函数 (避免走 api endpoint)
+    from flask import Request
+    with app.test_request_context(json=payload):
+        # 直接调用 view function + 拿到 response
+        resp = api_set_ollama_model_params()
+        if hasattr(resp, 'get_json'):
+            data_resp = resp.get_json()
+            data_resp["restored_from_defaults"] = True
+            data_resp["short_name"] = base_name
+            return jsonify(data_resp), resp.status_code
+        return resp
+
 @app.route("/api/set_pending_model", methods=["POST"])
 def api_set_pending_model():
     """设置 beellama 重启后自动加载的模型"""
@@ -2316,6 +2804,117 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>turbo3</b>: 速度快/功耗低 (~100W)，但长对话可能乱码 · <b>f16</b>: 稳定不乱码/功耗高 (~200W) · 修改后需重启 beellama
 </p>
 </div>
+<!-- ⚙️ Ollama 全局参数 (v1.1.8-patch2 新增, 切换到 ollama 时显示) -->
+<div class="card" id="ollama-params-card" style="display:none;">
+<h2>⚙️ Ollama 全局参数</h2>
+<div class="form-row">
+  <div class="form-group">
+    <label>KEEP_ALIVE (空闲后卸载时间, -1=永远驻留)</label>
+    <input type="text" id="ollama-keep-alive" placeholder="10m" style="min-width:100px;">
+  </div>
+  <div class="form-group">
+    <label>NUM_PARALLEL (并发数, 1=单用户)</label>
+    <input type="number" id="ollama-num-parallel" placeholder="1" min="1" max="16" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>BATCH_SIZE (可选, 留空=不设)</label>
+    <input type="number" id="ollama-batch-size" placeholder="512" min="1" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>GPU_LAYERS (可选, 留空=不限)</label>
+    <input type="number" id="ollama-gpu-layers" placeholder="35" min="0" max="200" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>FLASH_ATTENTION (0=关, 1=开)</label>
+    <select id="ollama-flash-attention" style="min-width:80px;">
+      <option value="0">0 (关)</option>
+      <option value="1">1 (开)</option>
+    </select>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn success" onclick="saveOllamaGlobalParams()" id="btn-save-ollama-global">💾 保存并重启 Ollama</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>KEEP_ALIVE</b>: 10m 配合 9528 空闲回退 (默认 300s) · <b>NUM_PARALLEL=1</b>: 1 并发 + per-model num_ctx 适合 22.5GB 卡 · 修改后重启 Ollama
+</p>
+</div>
+<!-- 📦 Ollama 模型专属参数 (v1.1.8-patch2 新增, 加载 ollama 模型后显示) -->
+<div class="card relative-card" id="ollama-model-params-card" style="display:none;">
+<h2>📦 Ollama 模型专属参数：<span id="ollama-model-params-name"></span></h2>
+<div id="ollama-model-params-overlay" class="processing-overlay" style="display:none;">
+  <div class="spin"></div>
+  <span>正在保存 Modelfile 并重建 tag...</span>
+</div>
+<div class="form-row">
+  <div class="form-group">
+    <label>num_ctx (决定 tag 后缀, 必填)</label>
+    <select id="ollama-num-ctx" style="min-width:150px;">
+      <option value="8192">8K (省显存)</option>
+      <option value="32768">32K</option>
+      <option value="65536">64K</option>
+      <option value="131072" selected>128K ⭐推荐</option>
+      <option value="262144">256K</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label>temperature (留空=默认)</label>
+    <input type="number" id="ollama-temperature" step="0.1" min="0" max="2" placeholder="0.8" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>top_p (留空=默认)</label>
+    <input type="number" id="ollama-top-p" step="0.05" min="0" max="1" placeholder="0.9" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>top_k (留空=默认)</label>
+    <input type="number" id="ollama-top-k" min="1" max="100" placeholder="40" style="min-width:80px;">
+  </div>
+  <div class="form-group">
+    <label>repeat_penalty (留空=默认)</label>
+    <input type="number" id="ollama-repeat-penalty" step="0.05" min="0" max="2" placeholder="1.1" style="min-width:80px;">
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn" onclick="resetOllamaModelParams()" id="btn-reset-ollama-model-params">🔄 恢复默认值</button>
+    <button class="btn success" onclick="saveOllamaModelParams()" id="btn-save-ollama-model-params" style="margin-left:8px;">💾 保存并重建 tag</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 修改 <b>num_ctx</b> 会创建新 tag (如 qwen3.6-q3:ctx128k), 旧 tag 保留 · 其他字段改后 tag 名不变 · 保存后请手动 <code>ollama run 新tag</code> 加载
+</p>
+</div>
+<!-- 🎯 Ollama 默认值 (v1.1.8-patch2 新增, 切到 ollama 时显示) -->
+<div class="card" id="ollama-defaults-card" style="display:none;">
+<h2>🎯 Ollama 默认值 <span id="ollama-defaults-current-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+仅显示当前加载 ollama 模型的默认值。保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code> 的 <code>ollama</code> 段。点「🔄 恢复默认」会把当前模型值复制到 Modelfile 并重建 tag。
+</p>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;">
+  <div style="color:var(--accent);font-size:0.82rem;margin-bottom:6px;">⚙️ Ollama 统一默认 (_fallback)</div>
+  <div class="form-row" style="margin:0;">
+    <div class="form-group" style="margin:0;">
+      <label>num_ctx</label>
+      <input type="number" id="ollama-defaults-fallback-num-ctx" placeholder="131072" min="512" max="1048576" step="512" style="min-width:110px;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>temperature</label>
+      <input type="number" id="ollama-defaults-fallback-temp" step="0.1" min="0" max="2" placeholder="0.8" style="min-width:80px;">
+    </div>
+    <div class="form-group" style="margin:0;">
+      <label>top_p</label>
+      <input type="number" id="ollama-defaults-fallback-top-p" step="0.05" min="0" max="1" placeholder="0.9" style="min-width:80px;">
+    </div>
+  </div>
+</div>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;">
+  <div style="color:var(--accent);font-size:0.82rem;margin-bottom:6px;">📋 当前模型默认值: <span id="ollama-defaults-current-name">—</span></div>
+  <div id="ollama-defaults-current-row" style="font-size:0.85rem;">
+    <div style="color:var(--text-dim);padding:6px 0;">加载 ollama 模型后, 在此编辑该模型的默认值</div>
+  </div>
+</div>
+<div class="form-group" style="justify-content:flex-end;">
+  <button class="btn success" onclick="saveOllamaDefaults()" id="btn-save-ollama-defaults">💾 保存 ollama defaults</button>
+</div>
+</div>
 <!-- ⚙️ ComfyUI 参数设置 (v1.1.8 新增, 切换到 comfyui 时显示) -->
 <div class="card" id="comfyui-params-card" style="display:none;">
 <h2>⚙️ ComfyUI 启动参数</h2>
@@ -2647,6 +3246,29 @@ async function refresh() {
       } else {
         comfyuiParamsCard.style.display = 'none';
         comfyuiPathsCard.style.display = 'none';
+      }
+    }
+    // ⚙️ 显示/隐藏 ollama 参数卡片 (v1.1.8-patch2)
+    var ollamaParamsCard = document.getElementById('ollama-params-card');
+    var ollamaModelParamsCard = document.getElementById('ollama-model-params-card');
+    var ollamaDefaultsCard = document.getElementById('ollama-defaults-card');
+    if (ollamaParamsCard) {
+      if (fw === 'ollama') {
+        ollamaParamsCard.style.display = 'block';
+        ollamaDefaultsCard.style.display = 'block';
+        loadOllamaGlobalParams();
+        loadOllamaDefaults();
+      } else {
+        ollamaParamsCard.style.display = 'none';
+        ollamaDefaultsCard.style.display = 'none';
+      }
+    }
+    if (ollamaModelParamsCard) {
+      if (fw === 'ollama' && currentModel) {
+        ollamaModelParamsCard.style.display = 'block';
+        loadOllamaModelParams();
+      } else {
+        ollamaModelParamsCard.style.display = 'none';
       }
     }
     // 📦 模型专属参数卡片：仅当加载了 beellama 模型时显示（保存中保持可见）
@@ -3283,6 +3905,220 @@ async function saveComfyuiPaths() {
   } finally {
     btn.disabled = false;
     btn.textContent = '💾 保存并重启 ComfyUI';
+  }
+}
+
+// ⚙️ Ollama 全局参数 (v1.1.8-patch2)
+async function loadOllamaGlobalParams() {
+  try {
+    const data = await fetchJSON('/api/ollama_global_params');
+    document.getElementById('ollama-keep-alive').value = data.keep_alive || '';
+    document.getElementById('ollama-num-parallel').value = data.num_parallel ?? '';
+    document.getElementById('ollama-batch-size').value = data.batch_size ?? '';
+    document.getElementById('ollama-gpu-layers').value = data.gpu_layers ?? '';
+    document.getElementById('ollama-flash-attention').value = String(data.flash_attention ?? 0);
+  } catch (e) {
+    console.error('加载 Ollama 全局参数失败:', e);
+  }
+}
+
+async function saveOllamaGlobalParams() {
+  const btn = document.getElementById('btn-save-ollama-global');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重启中...';
+  try {
+    const payload = {
+      keep_alive: document.getElementById('ollama-keep-alive').value || null,
+      num_parallel: document.getElementById('ollama-num-parallel').value || null,
+      batch_size: document.getElementById('ollama-batch-size').value || null,
+      gpu_layers: document.getElementById('ollama-gpu-layers').value || null,
+      flash_attention: document.getElementById('ollama-flash-attention').value,
+    };
+    const resp = await fetchJSON('/api/ollama_global_params', 'POST', payload);
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || 'Ollama 全局参数已保存并重启'), 'success', 5000);
+      setTimeout(refresh, 3000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存并重启 Ollama';
+  }
+}
+
+// 📦 Ollama per-model 参数 (v1.1.8-patch2)
+async function loadOllamaModelParams() {
+  if (!currentModel || currentFramework !== 'ollama') return;
+  try {
+    const data = await fetchJSON('/api/ollama_model_params?model=' + encodeURIComponent(currentModel));
+    const p = data.params || {};
+    document.getElementById('ollama-num-ctx').value = p.num_ctx || 131072;
+    document.getElementById('ollama-temperature').value = p.temperature ?? '';
+    document.getElementById('ollama-top-p').value = p.top_p ?? '';
+    document.getElementById('ollama-top-k').value = p.top_k ?? '';
+    document.getElementById('ollama-repeat-penalty').value = p.repeat_penalty ?? '';
+    document.getElementById('ollama-model-params-name').textContent = currentModel;
+  } catch (e) {
+    console.error('加载 Ollama 模型参数失败:', e);
+  }
+}
+
+async function saveOllamaModelParams() {
+  if (!currentModel) { showToast('未加载 ollama 模型', 'error'); return; }
+  const overlay = document.getElementById('ollama-model-params-overlay');
+  const btn = document.getElementById('btn-save-ollama-model-params');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存中...';
+  if (overlay) overlay.style.display = 'flex';
+  try {
+    const payload = {
+      model: currentModel,
+      num_ctx: document.getElementById('ollama-num-ctx').value,
+      temperature: document.getElementById('ollama-temperature').value || null,
+      top_p: document.getElementById('ollama-top-p').value || null,
+      top_k: document.getElementById('ollama-top-k').value || null,
+      repeat_penalty: document.getElementById('ollama-repeat-penalty').value || null,
+    };
+    const resp = await fetchJSON('/api/ollama_model_params', 'POST', payload);
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || '已保存'), 'success', 5000);
+    } else if (resp.status === 'partial') {
+      showToast('⚠️ ' + (resp.warning || '部分成功'), 'error', 6000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存并重建 tag';
+    if (overlay) overlay.style.display = 'none';
+  }
+}
+
+async function resetOllamaModelParams() {
+  if (!currentModel) { showToast('未加载 ollama 模型', 'error'); return; }
+  if (!confirm('确定要将 "' + currentModel + '" 的 per-model 参数恢复为 ollama defaults 中设置的值吗？\n\n将自动写 Modelfile 并重建 tag。')) return;
+  const overlay = document.getElementById('ollama-model-params-overlay');
+  const btn = document.getElementById('btn-reset-ollama-model-params');
+  btn.disabled = true;
+  btn.textContent = '⏳ 重置中...';
+  if (overlay) overlay.style.display = 'flex';
+  try {
+    const resp = await fetchJSON('/api/restore_ollama_default_model_params', 'POST', {model: currentModel});
+    if (resp.status === 'ok') {
+      showToast('✅ ' + (resp.message || '已恢复默认'), 'success', 5000);
+      // 重新拉参数刷卡片
+      await loadOllamaModelParams();
+    } else {
+      showToast('恢复失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('恢复失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 恢复默认值';
+    if (overlay) overlay.style.display = 'none';
+  }
+}
+
+// 🎯 Ollama defaults 卡片 (v1.1.8-patch2)
+let ollamaDefaultsCache = { _fallback: {}, models: {} };
+
+async function loadOllamaDefaults() {
+  try {
+    const data = await fetchJSON('/api/ollama_defaults');
+    ollamaDefaultsCache = data || { _fallback: {}, models: {} };
+    renderOllamaDefaults();
+  } catch (e) {
+    showToast('加载 ollama defaults 失败：' + e.message, 'error');
+  }
+}
+
+function renderOllamaDefaults() {
+  const fb = ollamaDefaultsCache._fallback || {};
+  document.getElementById('ollama-defaults-fallback-num-ctx').value = fb.num_ctx ?? '';
+  document.getElementById('ollama-defaults-fallback-temp').value = fb.temperature ?? '';
+  document.getElementById('ollama-defaults-fallback-top-p').value = fb.top_p ?? '';
+
+  const badge = document.getElementById('ollama-defaults-current-badge');
+  const nameEl = document.getElementById('ollama-defaults-current-name');
+  const rowEl = document.getElementById('ollama-defaults-current-row');
+
+  if (!currentModel) {
+    badge.textContent = '(未加载 ollama 模型)';
+    nameEl.textContent = '—';
+    rowEl.innerHTML = '<div style="color:var(--text-dim);padding:6px 0;">加载 ollama 模型后, 在此编辑该模型的默认值</div>';
+    return;
+  }
+  const baseName = currentModel.split(':')[0];
+  badge.textContent = `(当前: ${baseName})`;
+
+  const matchedParams = (ollamaDefaultsCache.models || {})[baseName];
+  if (matchedParams) {
+    nameEl.textContent = baseName;
+    rowEl.innerHTML = `
+      <div class="ollama-defaults-row" data-name="${baseName}" style="display:flex;gap:8px;align-items:center;padding:6px 0;flex-wrap:wrap;">
+        <input type="number" class="odf-num-ctx" placeholder="num_ctx" value="${matchedParams.num_ctx ?? ''}" min="512" max="1048576" step="512" style="width:110px;">
+        <input type="number" class="odf-temp" placeholder="temp" value="${matchedParams.temperature ?? ''}" step="0.1" min="0" max="2" style="width:80px;">
+        <input type="number" class="odf-top-p" placeholder="top_p" value="${matchedParams.top_p ?? ''}" step="0.05" min="0" max="1" style="width:80px;">
+        <span style="color:var(--text-dim);font-size:0.78rem;margin-left:8px;">(将保存到 <code>${baseName}</code>)</span>
+      </div>
+    `;
+  } else {
+    nameEl.textContent = baseName;
+    rowEl.innerHTML = `
+      <div style="color:var(--orange);padding:6px 0;font-size:0.88rem;">
+        ⚠️ ollama defaults 中没有「${baseName}」记录。<br>
+        在此手动填值后保存, 后续加载该模型时可用「🔄 恢复默认值」一键应用。
+      </div>
+    `;
+  }
+}
+
+async function saveOllamaDefaults() {
+  const btn = document.getElementById('btn-save-ollama-defaults');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存中...';
+  try {
+    // _fallback
+    const fb = {
+      num_ctx: parseInt(document.getElementById('ollama-defaults-fallback-num-ctx').value) || null,
+      temperature: parseFloat(document.getElementById('ollama-defaults-fallback-temp').value) || null,
+      top_p: parseFloat(document.getElementById('ollama-defaults-fallback-top-p').value) || null,
+    };
+    // models: 保留所有, 当前行从输入框读
+    const models = {};
+    for (const k of Object.keys(ollamaDefaultsCache.models || {})) {
+      models[k] = ollamaDefaultsCache.models[k];
+    }
+    const row = document.querySelector('.ollama-defaults-row');
+    if (row) {
+      const name = row.getAttribute('data-name');
+      models[name] = {
+        num_ctx: parseInt(row.querySelector('.odf-num-ctx').value) || null,
+        temperature: parseFloat(row.querySelector('.odf-temp').value) || null,
+        top_p: parseFloat(row.querySelector('.odf-top-p').value) || null,
+      };
+    }
+    const resp = await fetchJSON('/api/ollama_defaults', 'POST', {
+      _fallback: fb,
+      models: models,
+    });
+    if (resp.status === 'ok') {
+      showToast('✅ ollama defaults 已保存', 'success', 4000);
+      await loadOllamaDefaults();
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存 ollama defaults';
   }
 }
 

@@ -7,6 +7,19 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.9
 
 更新日志:
+- v1.1.8-patch3: Bug fixes (从全量测试中发现)
+  - Bug 1: ollama 下拉框同时显示基础名 + 衍生 tag, 用户选基础名会跳过 per-model num_ctx 配置
+    - 根因: get_ollama_models() 未隐藏基础名, 保留全部 tag
+    - 修复: 新增 _dedupe_ollama_models() 优先返回 -ctx<N>k 衍生 tag, 隐藏基础名 + :latest
+    - 例: 'qwen3.6-q3' / 'qwen3.6-q3:latest' / 'qwen3.6-q3:ctx128k' -> 只显示 'qwen3.6-q3:ctx128k'
+    - 额外修复: 识别混用的后缀名 ('-ctx<N>k' 和 ':ctx<N>k' 两种)
+  - Bug 2: beellama load timeout 120s 太短, 35B/26B 模型实际需 >120s
+    - 修复: subprocess.run timeout 120 -> 180
+    - 影响: 35B qwen3.6-q3 完整加载 + health check 需 90-110s, 之前常被 kill
+  - Bug 3: switch-inference.sh BEELLAMA_MODELS 用 'gemma4', framework-manager 用 'gemma-4-26b'
+    - 修复: switch-inference.sh 两处改为 'gemma-4-26b' (BEELLAMA_MODELS + MODELS 数组的 key)
+    - 根因: v1.0.3 后 alias 改了, switch-inference.sh 未同步
+  - 未动: beellama / comfyui 加载 / ollama service pipeline / 现有端点
 - v1.1.9: 多框架三层参数体系 (ComfyUI + Ollama 对齐 beellama)
   - 整合 patch1: ComfyUI 启动参数 + 模型路径管理
   - 整合 patch2: Ollama 三层参数 (global + per-model Modelfile + defaults)
@@ -412,24 +425,60 @@ def get_nvidia_vram():
     except Exception:
         return (0, 0)
 
+def _dedupe_ollama_models(raw_models):
+    """v1.1.8-patch3: 从原始 tag 列表中, 优先保留带 ctx 后缀的衍生 tag
+    例: ['qwen3:14b-ctx64k', 'qwen3:14b', 'gemma4:26b', 'gemma4:26b-ctx64k']
+        -> ['gemma4:26b-ctx64k', 'qwen3:14b-ctx64k']  (隐藏基础名, 避免走默认 2K ctx)
+    注意: ollama tag 命名不规范, 上下文后缀混用 '-ctx' 和 ':ctx':
+      - 短名 (gemma4:26b-ctx64k, qwen3:14b-ctx64k, bge-m3:ctx8k) 用 '-'
+      - 长名 (qwen3.6-q3:ctx128k, qwen3-vl:ctx128k) 用 ':'
+    另外: ollama Hub 拉取的原始 tag 会自动建 :latest 别名, 也视为基础名
+      - qwen3.6-q3 / qwen3.6-q3:latest / qwen3.6-q3:ctx128k -> 只保留 :ctx128k
+    """
+    import re
+    # 同时识别 :ctx<N>k 和 -ctx<N>k 后缀
+    ctx_suffix_re = re.compile(r'[-:]ctx\d+k$')
+    ctx_k_re = re.compile(r'ctx(\d+)k')
+    # 去掉 :latest / -ctx<N>k 后缀得到 base name
+    base_strip_re = re.compile(r':latest$|[-:]ctx\d+k$')
+    by_base = {}  # base_name -> [tag, ...]
+    for m in raw_models:
+        base = base_strip_re.sub('', m)
+        by_base.setdefault(base, []).append(m)
+    result = []
+    for base, tags in by_base.items():
+        ctx_tags = [t for t in tags if ctx_suffix_re.search(t)]
+        if ctx_tags:
+            # 只保留衍生 tag (按 ctx 升序)
+            result.extend(sorted(ctx_tags, key=lambda x: int(ctx_k_re.search(x).group(1))))
+        else:
+            # 基础名 (含 :latest)
+            result.extend(tags)
+    return sorted(set(result))
+
+
 def get_ollama_models():
     """
     获取 Ollama 模型列表。
     Ollama 服务运行中 -> ollama list 实时拉取。
     Ollama 未运行 -> 从本地 manifest 目录回退，展示已下载的模型。
+
+    v1.1.8-patch3: 优先返回 -ctx<N>k 衍生 tag (含 per-model num_ctx 配置)
+                    隐藏对应的基础 tag, 避免用户加载基础 tag 后走默认 2K ctx
+                    例: 返回 qwen3:14b-ctx64k, 隐藏 qwen3:14b
     """
     try:
         out = subprocess.check_output(["ollama", "list"], text=True, stderr=subprocess.DEVNULL)
         lines = out.strip().split("\n")[1:]
-        models = []
+        raw_models = []
         for line in lines:
             if line.strip():
                 name = line.split()[0]
                 # 排除 bge-m3 等非 LLM 模型
                 if name.lower().startswith('bge-m3'):
                     continue
-                models.append(name)
-        return models
+                raw_models.append(name)
+        return _dedupe_ollama_models(raw_models)
     except Exception:
         pass
     # ollama 未运行时的 fallback：扫描本地已下载的模型 manifest
@@ -478,7 +527,8 @@ def get_ollama_models():
                     if base_key not in seen_bases:
                         seen_bases.add(base_key)
                         manifests.append(name)
-        return sorted(manifests)
+        # v1.1.8-patch3: 优先返回 -ctx<N>k 衍生 tag, 隐藏对应基础名
+        return _dedupe_ollama_models(sorted(manifests))
     except Exception:
         return []
 def unload_ollama_models():
@@ -1389,7 +1439,8 @@ def load_model_for_framework(model_name):
             cmd = [SWITCH_SCRIPT, "beellama", short_model_name, "0", "3"]
             log.info(f"执行命令：{' '.join(cmd)}")
             _loading_state.update({"message": f"正在使用 beellama 加载 {short_model_name} 中...", "progress": 30})
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            # v1.1.8-patch3: timeout 120 -> 180, 35B 加载需 >120s
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
             if result.returncode != 0:
                 log.error(f"切换失败：{result.stderr}")

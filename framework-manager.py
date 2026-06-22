@@ -8,12 +8,13 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
 更新日志:
 - v1.1.17: 新增「📋 Manifest 生成参数」块
-  + 新增独立配置文件: config/ollama_manifest_generate_parameter.json (项目内)
+  + 新增独立配置文件: config/ollama_manifest_generate_parameter.json (项目内, 手动创建)
   + 新增 GET/POST /api/manifest_gen_params 端点
   + 新增 HTML 「📋 Manifest 生成参数」块 (与 「🎯 Ollama 默认值」 独立, 不覆盖)
   * 5 个生成 manifest 参数: num_ctx / temperature / top_p / top_k / repeat_penalty
   * UI: input + datalist 下拉, 预设常用值 + 标记推荐值
   * 默认值: num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0
+  * GET 文件不存在 → 404 (不兑底) - 文件手动创建, 不自动初始化
   - 不动现有 「🎯 Ollama 默认值」 块 (仍是 Modelfile 写 + tag 重建)
   - 不动 beellama / comfyui / 现有 6 个模型 / auto_register_gguf
 - v1.1.16: 「⚙️ Ollama 全局参数」块简化为只露 GPU_LAYERS
@@ -294,14 +295,8 @@ OLLAMA_MODELFILES_DIR = os.path.join(OLLAMA_MODELS_DIR, "modelfiles")
 # v1.1.17: 「📋 Manifest 生成参数」 文件 (项目内, 与 ~/.openclaw/config 独立)
 PROJECT_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MANIFEST_GEN_PARAMS_FILE = os.path.join(PROJECT_CONFIG_DIR, "ollama_manifest_generate_parameter.json")
-# GET 兑底默认值 (文件不存在时返回, 不落盘)
-_MANIFEST_GEN_PARAMS_DEFAULTS = {
-    "num_ctx": 131072,
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "top_k": 20,
-    "repeat_penalty": 1.0,
-}
+# manifest 生成参数合法字段 (顺序 = UI 顺序)
+_MANIFEST_GEN_PARAM_FIELDS = ["num_ctx", "temperature", "top_p", "top_k", "repeat_penalty"]
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -2505,16 +2500,11 @@ def api_set_ollama_defaults():
 # ── v1.1.17: Manifest 生成参数 (项目内独立配置, 与 ollama defaults 块独立) ─────────
 @app.route("/api/manifest_gen_params", methods=["GET"])
 def api_get_manifest_gen_params():
-    """获取「📋 Manifest 生成参数」
-    文件不存在 → 返回 _MANIFEST_GEN_PARAMS_DEFAULTS (不落盘)
-    存在 → 读文件
+    """获取「📋 Manifest 生成参数」: 读项目内 config/ollama_manifest_generate_parameter.json
+    文件不存在 → 报错 (调用方应保证文件已存在)
     """
     if not os.path.exists(MANIFEST_GEN_PARAMS_FILE):
-        return jsonify({
-            "params": _MANIFEST_GEN_PARAMS_DEFAULTS.copy(),
-            "source": "defaults_in_memory",
-            "file_path": MANIFEST_GEN_PARAMS_FILE,
-        })
+        return jsonify({"error": f"配置文件不存在: {MANIFEST_GEN_PARAMS_FILE}"}), 404
     try:
         with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
             data = json.load(f)
@@ -2522,7 +2512,6 @@ def api_get_manifest_gen_params():
         params = {k: v for k, v in data.items() if not k.startswith("_")}
         return jsonify({
             "params": params,
-            "source": "file",
             "file_path": MANIFEST_GEN_PARAMS_FILE,
         })
     except Exception as e:
@@ -2535,14 +2524,13 @@ def api_set_manifest_gen_params():
     body: {num_ctx, temperature, top_p, top_k, repeat_penalty}
     """
     data = request.get_json(silent=True) or {}
-    valid_keys = set(_MANIFEST_GEN_PARAMS_DEFAULTS.keys())
+    valid_keys = set(_MANIFEST_GEN_PARAM_FIELDS)
     unknown = set(data.keys()) - valid_keys
     if unknown:
         return jsonify({"error": f"未知字段: {unknown}"}), 400
     # 验证 + 转为合法 int/float
     out = {}
     int_fields = {"num_ctx", "top_k"}
-    float_fields = {"temperature", "top_p", "repeat_penalty"}
     for k in valid_keys:
         v = data.get(k)
         if v is None or v == "":
@@ -2557,10 +2545,9 @@ def api_set_manifest_gen_params():
     # num_ctx 范围
     if not (512 <= out["num_ctx"] <= 1048576):
         return jsonify({"error": f"num_ctx 越界 (512-1048576): {out['num_ctx']}"}), 400
-    # 写文件
+    # 写文件 (保留 _meta)
     try:
         os.makedirs(PROJECT_CONFIG_DIR, exist_ok=True)
-        # 保留 _meta (如果之前有)
         meta = {}
         if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
             try:

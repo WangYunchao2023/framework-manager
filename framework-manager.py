@@ -4,9 +4,13 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.19
+版本：1.2.1
 
 更新日志:
+- v1.2.1: 修复 beellama 队列调用完全失败
+  - switch-inference.sh v1.0.4: gemma-4-26b 命令替换报错导致整个脚本退出 → 改为固定路径
+  - alias_map 加 qwen3.6-uncensored → qwen3.6-35b-uncensored
+- v1.2.0: 推理请求队列 + 自动 VRAM 轮换 (POST /api/qrun + worker thread)
 - v1.1.19: 升版 (汇总 v1.1.18 + patch1~4)
   - v1.1.18: 自动注册用户下载的 GGUF (ingest_gguf)
     + 扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf (用户下载/放置的)
@@ -1560,6 +1564,7 @@ def load_model_for_framework(model_name):
             # 别名匹配: qwen3.6-q3 ↔ qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf
             alias_map = {
                 'qwen3.6-q3': 'qwen3.6-35b',
+                'qwen3.6-uncensored': 'qwen3.6-35b-uncensored',  # v1.2.0-patch1: 补齐 alias, 否则 beellama 队列找不到此模型
                 'qwen3-vl': 'qwen3-vl',
                 'gemma4': 'gemma-4-26b',
             }

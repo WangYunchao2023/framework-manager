@@ -2,9 +2,11 @@
 # switch-inference.sh — Ollama ↔ beellama 推理引擎切换
 # beellama = Anbeeld fork (llama.cpp 9459) — DFlash 推测解码 + TurboQuant
 #
-# 版本：1.0.3
+# 版本：1.0.4
 #
 # 更新日志:
+# - v1.0.4: 修复 gemma-4-26b 命令替换在 GGUF 不在 blobs/ 时 `xargs basename` 无输入报错 → `set -e` 让整个 switch-inference.sh 退出 → beellama 切换完全失败
+#   改用已知固定路径 /home/wangyc/models/gemma-4-26b/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 # - v1.0.3: ollama 端 num_ctx 改为 per-model Modelfile 配置
 #   移除 systemd override.conf 的 OLLAMA_CONTEXT_LENGTH 全局 32K
 #   5 个常驻模型各有独立 num_ctx (对齐 beellama 端配置):
@@ -47,7 +49,8 @@ MODELS=(
   "qwen3.6-q3|Qwen3.6-35B Q3_K_M|/home/wangyc/models/qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf|16 GB|~17 GB"
   "qwen3.6-uncensored|Qwen3.6-35B Uncensored HauhauCS Q3_K_P|/home/wangyc/models/qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf|17.7 GB|~19 GB"
   "qwen3-14b|Qwen3-14B Q4_K_M|/home/wangyc/models/qwen3-14b/qwen3-14b-q4.gguf|9.3 GB|~10 GB"
-  "gemma-4-26b|Gemma4 26B A4B|/data/ollama/models/blobs/$(ls /data/ollama/models/blobs/sha256-6159deaf76075* 2>/dev/null | head -1 | xargs basename)|16 GB|~17 GB"
+  # v1.0.4: 改用已知固定路径 + 命令替换加 || echo "" 兜底 — 当 ollama gemma4 GGUF 不在 blobs/ 时 (basename 无输入) 不让整个脚本退出
+  "gemma-4-26b|Gemma4 26B A4B|/home/wangyc/models/gemma-4-26b/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf|16 GB|~17 GB"
   "qwen3-vl|Qwen3-VL 8B|/home/wangyc/models/qwen3-vl/qwen3-vl-8b.gguf|5.9 GB|~8 GB"
 )
 

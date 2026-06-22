@@ -3657,9 +3657,6 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
     <button class="btn success" onclick="saveManifestGenParams()" id="btn-save-mgen-params">💾 保存</button>
   </div>
 </div>
-<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
-💡 <b>什么时候生效</b>：仅「导入 GGUF」(ingest_gguf) 时使用。已建好的 manifest 不会受影响，要改需去「📦 Ollama 模型专属参数」或「🎯 Ollama 默认值」块。
-</p>
 </div>
 <!-- 📥 自动注册下载的模型 (v1.1.18 新增, 切到 ollama 时显示) -->
 <div class="card" id="ingest-gguf-card" style="display:none;">

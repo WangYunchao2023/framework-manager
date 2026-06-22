@@ -3669,7 +3669,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 </p>
 <div class="form-row">
   <div class="form-group" style="flex:1;">
-    <button class="btn primary" onclick="ingestGguf()" id="btn-ingest-gguf" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并自动注册 blobs/ 中未注册的 GGUF</button>
+    <button class="btn primary" onclick="ingestGguf()" id="btn-ingest-gguf" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并自动注册用户下载的模型</button>
   </div>
 </div>
 <div id="ingest-gguf-result" style="margin-top:10px;font-size:0.82rem;color:var(--text-dim);"></div>
@@ -4958,7 +4958,7 @@ async function ingestGguf() {
     setTimeout(function() { showLoadStatus(false); }, 3000);
   } finally {
     btn.disabled = false;
-    btn.textContent = '📥 扫描并自动注册 blobs/ 中未注册的 GGUF';
+    btn.textContent = '📥 扫描并自动注册用户下载的模型';
   }
 }
 

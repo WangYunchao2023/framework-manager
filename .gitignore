@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-*.pyo
-.DS_Store
-*.bak
-*.bak2
+# 运行时配置 (v1.1.17 起配置文件移到项目内, 但不入 git)
+config/ollama_manifest_generate_parameter.json
+logs/

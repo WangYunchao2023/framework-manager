@@ -264,3 +264,5 @@
 [2026-06-22 21:56:35] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
 [2026-06-22 22:16:20] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': 50, 'batch_size': None, 'flash_attention': 1} | ok
 [2026-06-22 22:16:31] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': 35, 'batch_size': None, 'flash_attention': 1} | ok
+[2026-06-22 23:01:29] 保存 Manifest 生成参数     | params={'top_p': 0.95, 'repeat_penalty': 1.0, 'top_k': 20, 'num_ctx': 65536, 'temperature': 0.7} | ok
+[2026-06-22 23:01:29] 保存 Manifest 生成参数     | params={'top_p': 0.95, 'repeat_penalty': 1.0, 'top_k': 20, 'num_ctx': 131072, 'temperature': 0.7} | ok

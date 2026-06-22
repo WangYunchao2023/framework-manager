@@ -4,9 +4,18 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.16
+版本：1.1.17
 
 更新日志:
+- v1.1.17: 新增「📋 Manifest 生成参数」块
+  + 新增独立配置文件: config/ollama_manifest_generate_parameter.json (项目内)
+  + 新增 GET/POST /api/manifest_gen_params 端点
+  + 新增 HTML 「📋 Manifest 生成参数」块 (与 「🎯 Ollama 默认值」 独立, 不覆盖)
+  * 5 个生成 manifest 参数: num_ctx / temperature / top_p / top_k / repeat_penalty
+  * UI: input + datalist 下拉, 预设常用值 + 标记推荐值
+  * 默认值: num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0
+  - 不动现有 「🎯 Ollama 默认值」 块 (仍是 Modelfile 写 + tag 重建)
+  - 不动 beellama / comfyui / 现有 6 个模型 / auto_register_gguf
 - v1.1.16: 「⚙️ Ollama 全局参数」块简化为只露 GPU_LAYERS
   * 重命名: 「⚙️ Ollama 全局参数」→ 「🎛️ Ollama 进程参数」(明确是进程 env 层, 不是模型层)
   - 删除 UI 输入框: KEEP_ALIVE / NUM_PARALLEL / BATCH_SIZE / FLASH_ATTENTION (4 个)
@@ -281,6 +290,18 @@ OLLAMA_OVERRIDE_DIR = os.path.expanduser("~/.config/systemd/user/ollama.service.
 OLLAMA_OVERRIDE_FILE = os.path.join(OLLAMA_OVERRIDE_DIR, "override.conf")
 OLLAMA_MODELS_DIR = "/data/ollama/models"  # 与 override.conf 中 OLLAMA_MODELS 一致
 OLLAMA_MODELFILES_DIR = os.path.join(OLLAMA_MODELS_DIR, "modelfiles")
+
+# v1.1.17: 「📋 Manifest 生成参数」 文件 (项目内, 与 ~/.openclaw/config 独立)
+PROJECT_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+MANIFEST_GEN_PARAMS_FILE = os.path.join(PROJECT_CONFIG_DIR, "ollama_manifest_generate_parameter.json")
+# GET 兑底默认值 (文件不存在时返回, 不落盘)
+_MANIFEST_GEN_PARAMS_DEFAULTS = {
+    "num_ctx": 131072,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 20,
+    "repeat_penalty": 1.0,
+}
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -2481,6 +2502,88 @@ def api_set_ollama_defaults():
     return jsonify({"status": "ok"})
 
 
+# ── v1.1.17: Manifest 生成参数 (项目内独立配置, 与 ollama defaults 块独立) ─────────
+@app.route("/api/manifest_gen_params", methods=["GET"])
+def api_get_manifest_gen_params():
+    """获取「📋 Manifest 生成参数」
+    文件不存在 → 返回 _MANIFEST_GEN_PARAMS_DEFAULTS (不落盘)
+    存在 → 读文件
+    """
+    if not os.path.exists(MANIFEST_GEN_PARAMS_FILE):
+        return jsonify({
+            "params": _MANIFEST_GEN_PARAMS_DEFAULTS.copy(),
+            "source": "defaults_in_memory",
+            "file_path": MANIFEST_GEN_PARAMS_FILE,
+        })
+    try:
+        with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
+            data = json.load(f)
+        # 仅返回有效参数 (过滤 _meta)
+        params = {k: v for k, v in data.items() if not k.startswith("_")}
+        return jsonify({
+            "params": params,
+            "source": "file",
+            "file_path": MANIFEST_GEN_PARAMS_FILE,
+        })
+    except Exception as e:
+        return jsonify({"error": f"读文件失败: {e}"}), 500
+
+
+@app.route("/api/manifest_gen_params", methods=["POST"])
+def api_set_manifest_gen_params():
+    """保存「📋 Manifest 生成参数」 → 写项目内 config/ollama_manifest_generate_parameter.json
+    body: {num_ctx, temperature, top_p, top_k, repeat_penalty}
+    """
+    data = request.get_json(silent=True) or {}
+    valid_keys = set(_MANIFEST_GEN_PARAMS_DEFAULTS.keys())
+    unknown = set(data.keys()) - valid_keys
+    if unknown:
+        return jsonify({"error": f"未知字段: {unknown}"}), 400
+    # 验证 + 转为合法 int/float
+    out = {}
+    int_fields = {"num_ctx", "top_k"}
+    float_fields = {"temperature", "top_p", "repeat_penalty"}
+    for k in valid_keys:
+        v = data.get(k)
+        if v is None or v == "":
+            return jsonify({"error": f"{k} 不能为空"}), 400
+        try:
+            if k in int_fields:
+                out[k] = int(v)
+            else:
+                out[k] = float(v)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"{k} 必须是数字"}), 400
+    # num_ctx 范围
+    if not (512 <= out["num_ctx"] <= 1048576):
+        return jsonify({"error": f"num_ctx 越界 (512-1048576): {out['num_ctx']}"}), 400
+    # 写文件
+    try:
+        os.makedirs(PROJECT_CONFIG_DIR, exist_ok=True)
+        # 保留 _meta (如果之前有)
+        meta = {}
+        if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
+            try:
+                with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
+                    old = json.load(f)
+                meta = old.get("_meta", {})
+            except Exception:
+                pass
+        meta.update({
+            "description": "用于 ingest_gguf 生成新 manifest 时的默认参数",
+            "推荐值": "num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0",
+            "version": "1.0.0",
+        })
+        payload = dict(out)
+        payload["_meta"] = meta
+        with open(MANIFEST_GEN_PARAMS_FILE, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return jsonify({"error": f"写文件失败: {e}"}), 500
+    audit_log("保存 Manifest 生成参数", f"params={out}", "ok")
+    return jsonify({"status": "ok", "params": out, "file_path": MANIFEST_GEN_PARAMS_FILE})
+
+
 @app.route("/api/restore_ollama_default_model_params", methods=["POST"])
 def api_restore_ollama_default_model_params():
     """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
@@ -3222,6 +3325,76 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>优先级最高</b> · 修改 <b>num_ctx</b> 会创建新 tag (如 qwen3.6-q3:ctx128k), 旧 tag 保留 · 其他字段改后 tag 名不变 · 保存后请手动 <code>ollama run 新tag</code> 加载
 </p>
 </div>
+<!-- 📋 Manifest 生成参数 (v1.1.17 新增, 切到 ollama 时显示) -->
+<div class="card" id="manifest-gen-params-card" style="display:none;">
+<h2>📋 Manifest 生成参数</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+  <b>用于 ingest_gguf 生成新 manifest 时的默认参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中有 ⭐ 标记推荐值
+</p>
+<div class="form-row">
+  <div class="form-group">
+    <label>num_ctx (上下文) ⭐131072</label>
+    <input type="number" id="mgen-num-ctx" list="mgen-num-ctx-list" placeholder="131072" min="512" max="1048576" step="512" style="min-width:120px;">
+    <datalist id="mgen-num-ctx-list">
+      <option value="4096">4K (小模型/embedding)</option>
+      <option value="8192">8K (bge-m3 专用)</option>
+      <option value="16384">16K</option>
+      <option value="32768">32K</option>
+      <option value="65536">64K (qwen3:14b / gemma4)</option>
+      <option value="131072">⭐ 128K (推荐, qwen3.6 / qwen3-vl)</option>
+      <option value="262144">256K (上限, 可能 OOM)</option>
+    </datalist>
+  </div>
+  <div class="form-group">
+    <label>temperature ⭐0.7</label>
+    <input type="number" id="mgen-temperature" list="mgen-temp-list" step="0.1" min="0" max="2" placeholder="0.7" style="min-width:100px;">
+    <datalist id="mgen-temp-list">
+      <option value="0.0">0.0 (完全确定性)</option>
+      <option value="0.3">0.3 (保守/代码)</option>
+      <option value="0.7">⭐ 0.7 (推荐, 平衡)</option>
+      <option value="1.0">1.0 (标准)</option>
+      <option value="1.5">1.5 (发散/创作)</option>
+    </datalist>
+  </div>
+  <div class="form-group">
+    <label>top_p ⭐0.95</label>
+    <input type="number" id="mgen-top-p" list="mgen-top-p-list" step="0.05" min="0" max="1" placeholder="0.95" style="min-width:100px;">
+    <datalist id="mgen-top-p-list">
+      <option value="0.5">0.5 (保守)</option>
+      <option value="0.8">0.8</option>
+      <option value="0.9">0.9</option>
+      <option value="0.95">⭐ 0.95 (推荐)</option>
+      <option value="0.99">0.99 (发散)</option>
+    </datalist>
+  </div>
+  <div class="form-group">
+    <label>top_k ⭐20</label>
+    <input type="number" id="mgen-top-k" list="mgen-top-k-list" min="1" max="200" placeholder="20" style="min-width:100px;">
+    <datalist id="mgen-top-k-list">
+      <option value="10">10 (严格)</option>
+      <option value="20">⭐ 20 (推荐)</option>
+      <option value="40">40</option>
+      <option value="80">80 (发散)</option>
+    </datalist>
+  </div>
+  <div class="form-group">
+    <label>repeat_penalty ⭐1.0</label>
+    <input type="number" id="mgen-repeat-penalty" list="mgen-rp-list" step="0.05" min="0.5" max="2" placeholder="1.0" style="min-width:100px;">
+    <datalist id="mgen-rp-list">
+      <option value="1.0">⭐ 1.0 (推荐, 不重复惩罚)</option>
+      <option value="1.1">1.1 (轻微)</option>
+      <option value="1.2">1.2 (中等)</option>
+      <option value="1.3">1.3 (强)</option>
+    </datalist>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn success" onclick="saveManifestGenParams()" id="btn-save-mgen-params">💾 保存</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>什么时候生效</b>：仅「导入 GGUF」(ingest_gguf) 时使用。已建好的 manifest 不会受影响，要改需去「📦 Ollama 模型专属参数」或「🎯 Ollama 默认值」块。
+</p>
+</div>
 <!-- 🎯 Ollama 默认值 (v1.1.8-patch2 新增, 切到 ollama 时显示) -->
 <div class="card" id="ollama-defaults-card" style="display:none;">
 <h2>🎯 Ollama 默认值 <span id="ollama-defaults-current-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
@@ -3600,15 +3773,21 @@ async function refresh() {
     var ollamaParamsCard = document.getElementById('ollama-params-card');
     var ollamaModelParamsCard = document.getElementById('ollama-model-params-card');
     var ollamaDefaultsCard = document.getElementById('ollama-defaults-card');
+    var manifestGenParamsCard = document.getElementById('manifest-gen-params-card');  // v1.1.17
     if (ollamaParamsCard) {
       if (fw === 'ollama') {
         ollamaParamsCard.style.display = 'block';
         ollamaDefaultsCard.style.display = 'block';
+        if (manifestGenParamsCard) {
+          manifestGenParamsCard.style.display = 'block';
+          loadManifestGenParams();
+        }
         loadOllamaGlobalParams();
         loadOllamaDefaults();
       } else {
         ollamaParamsCard.style.display = 'none';
         ollamaDefaultsCard.style.display = 'none';
+        if (manifestGenParamsCard) manifestGenParamsCard.style.display = 'none';
       }
     }
     if (ollamaModelParamsCard) {
@@ -4409,6 +4588,47 @@ async function resetOllamaModelParams() {
 let ollamaDefaultsCache = { _fallback: {}, models: {} };
 let ollamaFallbackOverride = {}; // 用户手动改 fallback 时的临时值
 let ollamaUserModified = false; // 用户是否手动改过当前模型行的输入框
+
+// 📋 Manifest 生成参数 (v1.1.17)
+async function loadManifestGenParams() {
+  try {
+    const data = await fetchJSON('/api/manifest_gen_params');
+    const p = data.params || {};
+    document.getElementById('mgen-num-ctx').value = p.num_ctx ?? '';
+    document.getElementById('mgen-temperature').value = p.temperature ?? '';
+    document.getElementById('mgen-top-p').value = p.top_p ?? '';
+    document.getElementById('mgen-top-k').value = p.top_k ?? '';
+    document.getElementById('mgen-repeat-penalty').value = p.repeat_penalty ?? '';
+  } catch (e) {
+    console.error('加载 Manifest 生成参数失败:', e);
+  }
+}
+
+async function saveManifestGenParams() {
+  const btn = document.getElementById('btn-save-mgen-params');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存中...';
+  try {
+    const payload = {
+      num_ctx: document.getElementById('mgen-num-ctx').value,
+      temperature: document.getElementById('mgen-temperature').value,
+      top_p: document.getElementById('mgen-top-p').value,
+      top_k: document.getElementById('mgen-top-k').value,
+      repeat_penalty: document.getElementById('mgen-repeat-penalty').value,
+    };
+    const resp = await fetchJSON('/api/manifest_gen_params', 'POST', payload);
+    if (resp.status === 'ok') {
+      showToast('✅ 已保存: ' + JSON.stringify(resp.params), 'success', 3000);
+    } else {
+      showToast('保存失败: ' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存';
+  }
+}
 
 async function loadOllamaDefaults() {
   try {

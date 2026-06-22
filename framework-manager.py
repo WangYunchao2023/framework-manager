@@ -4,10 +4,26 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.17
+版本：1.1.19
 
 更新日志:
-- v1.1.17: 新增「📋 新模型注册参数」块
+- v1.1.19: 升版 (汇总 v1.1.18 + patch1~4)
+  - v1.1.18: 自动注册用户下载的 GGUF (ingest_gguf)
+    + 扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf (用户下载/放置的)
+    + 增量计算 sha256 (8MB chunks, 避免 OOM)
+    + 硬链接为 sha256-{hash} 命名 (跨 fs 退到 shutil.copy2)
+    + 删原文件 (硬链接保留, 源释放)
+    + 解析 GGUF header (手写 80 行 parser, 提取 general.name + context_length)
+    + 读「📋 新模型注册参数」文件中 5 个参数
+    + num_ctx = min(用户设置, gguf.context_length) - 不能超原生 ctx
+    + tag 格式: '{general.name}-ctx{N}k' (如 TestModel-Fake:ctx32k)
+    + 复用 load-status-area 进度遮罩 + audit_log
+  - v1.1.18-patch1: 删除 _meta 段, 文件只存 5 个值 (json dump 直接写 5 个参数)
+  - v1.1.18-patch2: 按钮文字改为「扫描并自动注册用户下载的模型」
+  - v1.1.18-patch3: 块说明文字加「不影响已注册模型」 (绿色高亮)
+  - v1.1.18-patch4: 删「📋 新模型注册参数」块下方冗余说明文字
+  - v1.1.17-patch5: 修复 repeat_penalty select 不显示问题 (String(1.0) === '1')
+  - v1.1.17: 新增「📋 新模型注册参数」块
   + 新增独立配置文件: config/ollama_manifest_generate_parameter.json (项目内, 手动创建)
   + 新增 GET/POST /api/manifest_gen_params 端点
   + 新增 HTML 「📋 新模型注册参数」块 (与 「🎯 Ollama 默认值」 独立, 不覆盖)
@@ -3414,7 +3430,7 @@ INDEX_HTML = r'''<!DOCTYPE html>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>框架管理器 v1.1.17</title>
+<title>框架管理器 v1.1.19</title>
 <style>
 :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--text-dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922}
 *{box-sizing:border-box;margin:0;padding:0}

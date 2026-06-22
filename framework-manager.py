@@ -5400,10 +5400,333 @@ async function confirmInitModel() {
 </body>
 </html>'''
 
+# ── v1.2.0: 推理请求队列 + 自动 VRAM 轮换 ────────────────────────
+# append-only: 不修改现有任何函数/路由，仅新增
+# 目的：让 OpenClaw (/model) 或其它工具通过 /api/qrun 提交推理请求，
+#       framework-manager 自动维护队列 → 比对当前显存 → 必要时切框架/模型 → 转发 → 返回结果。
+import base64 as _qr_base64
+import uuid as _qr_uuid
+import urllib.request as _urlreq
+import urllib.error as _urlerr
+
+_qrun_queue = []          # FIFO list of task ids pending to be picked up by worker
+_qrun_tasks = {}          # task_id -> task dict (唯一可信源，含 queued/running/done/error/cancelled)
+_qrun_lock = threading.Lock()
+_qrun_event = threading.Event()
+_qrun_worker_started = False
+_qrun_worker_lock = threading.Lock()
+
+# 每个框架的转发上游基址 + 允许转发的路径白名单
+_QRUN_FORWARD_BASE = {
+    "ollama":   "http://127.0.0.1:11434",
+    "beellama": "http://127.0.0.1:8080",
+    "comfyui":  "http://127.0.0.1:8188",
+}
+_QRUN_FORWARD_PATHS = {
+    "ollama":   ["/api/generate", "/api/chat", "/api/embeddings", "/api/show"],
+    "beellama": ["/v1/chat/completions", "/v1/completions", "/v1/embeddings"],
+    # ComfyUI 是异步工作流提交，v1 不透传（需切换框架后由调用方自行交互）
+    "comfyui":  [],
+}
+
+
+def _qrun_normalize_framework(fw):
+    if not fw:
+        return None
+    fw = str(fw).lower().strip()
+    return fw if fw in ("ollama", "beellama", "comfyui") else None
+
+
+def _qrun_new_task(framework, model, upstream_path, method, body, headers, source):
+    task = {
+        "task_id": _qr_uuid.uuid4().hex[:12],
+        "framework": framework,
+        "model": model or "",
+        "path": upstream_path,
+        "method": (method or "POST").upper(),
+        "body": body if body is not None else {},
+        "headers": headers or {},
+        "source": source or "unknown",
+        "created_at": time.time(),
+        "status": "queued",  # queued / running / done / error / cancelled
+        "result": None,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+        "switched": False,
+    }
+    with _qrun_lock:
+        _qrun_queue.append(task["task_id"])
+        _qrun_tasks[task["task_id"]] = task
+    _qrun_event.set()
+    return task
+
+
+def _qrun_forward(framework, path, method, body, timeout=600):
+    """转发到活跃框架的 HTTP 端点。返回 (status, bytes, content_type)。"""
+    base = _QRUN_FORWARD_BASE.get(framework)
+    if not base:
+        return 501, json.dumps({"error": f"framework {framework} not supported for forwarding"}).encode("utf-8"), "application/json"
+    url = base.rstrip("/") + path
+    payload = json.dumps(body).encode("utf-8") if body is not None else b""
+    req = _urlreq.Request(url, data=payload, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read(), resp.headers.get("Content-Type", "application/json")
+    except _urlerr.HTTPError as e:
+        return e.code, e.read(), e.headers.get("Content-Type", "application/json")
+    except Exception as e:
+        return 502, json.dumps({"error": f"forward failed: {e}"}).encode("utf-8"), "application/json"
+
+
+def _qrun_wait_for_framework_ready(framework, model, timeout=180):
+    """等待 current_framework/current_model 与目标一致。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if current_framework == framework:
+            if not model:
+                return True
+            cur_norm = _normalize_model_name(current_model) if current_model else ""
+            tgt_norm = _normalize_model_name(model) if model else ""
+            if cur_norm and cur_norm == tgt_norm:
+                return True
+        time.sleep(1)
+    return False
+
+
+def _qrun_worker_loop():
+    """单 worker 线程，顺序处理队列（与「显存轮换」语义一致：同一时刻一个模型）。"""
+    global last_activity_time
+    log.info("[qrun] worker started")
+    while True:
+        _qrun_event.wait()
+        _qrun_event.clear()
+        while True:
+            with _qrun_lock:
+                if not _qrun_queue:
+                    break
+                tid = _qrun_queue.pop(0)
+                task = _qrun_tasks.get(tid)
+            if not task:
+                continue  # 已被取消
+            task["status"] = "running"
+            task["started_at"] = time.time()
+            log.info(f"[qrun] {task['task_id']} start fw={task['framework']} model={task['model']} {task['method']} {task['path']}")
+            try:
+                fw = task["framework"]
+                model = task["model"]
+                # 1. 比对当前是否已就绪
+                need_switch = False
+                if current_framework != fw:
+                    need_switch = True
+                elif model:
+                    cur_norm = _normalize_model_name(current_model) if current_model else ""
+                    tgt_norm = _normalize_model_name(model) if model else ""
+                    if cur_norm != tgt_norm:
+                        need_switch = True
+                # 2. 切换
+                if need_switch:
+                    task["switched"] = True
+                    log.info(f"[qrun] {task['task_id']} switch {current_framework}/{current_model} → {fw}/{model}")
+                    if not switch_framework_to(fw):
+                        raise RuntimeError(f"switch_framework_to({fw}) failed")
+                    if model:
+                        ok, msg = load_model_for_framework(model)
+                        if not ok:
+                            raise RuntimeError(f"load_model_for_framework failed: {msg}")
+                # 3. 等就绪
+                if not _qrun_wait_for_framework_ready(fw, model, timeout=180):
+                    raise RuntimeError(f"timeout waiting {fw}/{model} ready")
+                # 4. 转发（保持活动计时，防止空闲回退误触发）
+                last_activity_time = time.time()
+                status, data, ctype = _qrun_forward(fw, task["path"], task["method"], task["body"], timeout=600)
+                task["result"] = {
+                    "status": status,
+                    "content_type": ctype,
+                    "body_b64": _qr_base64.b64encode(data).decode("ascii"),
+                }
+                task["status"] = "done" if status < 400 else "error"
+                if status >= 400:
+                    task["error"] = f"upstream returned {status}"
+                log.info(f"[qrun] {task['task_id']} done upstream_status={status}")
+            except Exception as e:
+                task["status"] = "error"
+                task["error"] = str(e)
+                log.error(f"[qrun] {task['task_id']} error: {e}")
+            finally:
+                task["finished_at"] = time.time()
+                # task 已在 _qrun_tasks 中，状态已更新；仅通知 worker 检查下一个
+                _qrun_event.set()
+                time.sleep(0.05)
+
+
+def _ensure_qrun_worker():
+    global _qrun_worker_started
+    with _qrun_worker_lock:
+        if _qrun_worker_started:
+            return
+        t = threading.Thread(target=_qrun_worker_loop, name="qrun-worker", daemon=True)
+        t.start()
+        _qrun_worker_started = True
+        log.info("[qrun] worker thread spawned")
+
+
+def _qrun_task_to_response(task):
+    """把 task dict 包装成 Flask JSON 响应。"""
+    out = {
+        "task_id": task["task_id"],
+        "status": task["status"],
+        "framework": task["framework"],
+        "model": task["model"],
+        "path": task["path"],
+        "switched": task.get("switched", False),
+        "created_at": task["created_at"],
+        "started_at": task.get("started_at"),
+        "finished_at": task.get("finished_at"),
+        "source": task.get("source"),
+    }
+    if task.get("error"):
+        out["error"] = task["error"]
+    if task.get("result"):
+        out["upstream_status"] = task["result"]["status"]
+        out["upstream_content_type"] = task["result"]["content_type"]
+        out["upstream_body_b64"] = task["result"]["body_b64"]
+        # 便利字段：若 JSON 响应则直接解码
+        try:
+            body_bytes = _qr_base64.b64decode(task["result"]["body_b64"])
+            if (task["result"]["content_type"] or "").startswith("application/json"):
+                out["upstream_body"] = json.loads(body_bytes)
+        except Exception:
+            pass
+    return jsonify(out)
+
+
+@app.route("/api/qrun", methods=["POST"])
+def api_qrun():
+    """入队推理请求。
+    Body: {"framework":"ollama|beellama|comfyui",
+           "model":"...",      // 可选；省略则只切框架不加载模型
+           "path":"/api/chat", // 默认 ollama→/api/chat, beellama→/v1/chat/completions
+           "method":"POST",
+           "body":{...},       // 透传给上游的 JSON body
+           "source":"openclaw" // 标识调用方，便于审计
+          }
+    Query: ?wait=true&timeout=600 同步等结果
+    """
+    global last_activity_time
+    last_activity_time = time.time()
+    _ensure_qrun_worker()
+
+    data = request.get_json(silent=True) or {}
+    fw = _qrun_normalize_framework(data.get("framework"))
+    if not fw:
+        return jsonify({"error": "framework must be one of ollama/beellama/comfyui"}), 400
+    if fw == "comfyui":
+        return jsonify({
+            "error": "comfyui forwarding not implemented in v1; please switch framework manually first",
+            "hint": "POST /api/set_framework {\"framework\":\"comfyui\"} then call comfyui's own endpoints directly"
+        }), 501
+
+    model = data.get("model") or ""
+    upstream_path = data.get("path")
+    if not upstream_path:
+        upstream_path = "/api/chat" if fw == "ollama" else "/v1/chat/completions"
+    if upstream_path not in _QRUN_FORWARD_PATHS.get(fw, []):
+        return jsonify({
+            "error": f"path {upstream_path} not allowed for framework {fw}",
+            "allowed": _QRUN_FORWARD_PATHS.get(fw, [])
+        }), 400
+    method = (data.get("method") or "POST").upper()
+    body = data.get("body")
+    source = data.get("source") or request.headers.get("X-Source") or "unknown"
+
+    task = _qrun_new_task(fw, model, upstream_path, method, body, {}, source)
+
+    wait = request.args.get("wait", "").lower() in ("1", "true", "yes")
+    if wait:
+        try:
+            timeout_s = float(request.args.get("timeout", "600"))
+        except ValueError:
+            timeout_s = 600.0
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            with _qrun_lock:
+                t = _qrun_tasks.get(task["task_id"])
+            if t and t["status"] in ("done", "error", "cancelled"):
+                return _qrun_task_to_response(t)
+            time.sleep(0.2)
+        return jsonify({"task_id": task["task_id"], "status": "timeout_waiting"}), 202
+
+    return jsonify({"task_id": task["task_id"], "status": "queued"}), 202
+
+
+@app.route("/api/qrun/<task_id>", methods=["GET"])
+def api_qrun_get(task_id):
+    with _qrun_lock:
+        t = _qrun_tasks.get(task_id)
+    if not t:
+        return jsonify({"error": "task not found"}), 404
+    return _qrun_task_to_response(t)
+
+
+@app.route("/api/qrun/<task_id>", methods=["DELETE"])
+def api_qrun_cancel(task_id):
+    with _qrun_lock:
+        t = _qrun_tasks.get(task_id)
+        if not t:
+            return jsonify({"error": "task not found"}), 404
+        if t["status"] != "queued":
+            return jsonify({"error": f"task not cancellable (status={t['status']})"}), 409
+        # 从 _qrun_queue 移除
+        try:
+            _qrun_queue.remove(task_id)
+        except ValueError:
+            pass
+        t["status"] = "cancelled"
+        t["finished_at"] = time.time()
+        return jsonify({"task_id": task_id, "status": "cancelled"})
+
+
+@app.route("/api/qstatus", methods=["GET"])
+def api_qstatus():
+    """队列状态（不返回任务 body，避免泄密）。"""
+    with _qrun_lock:
+        queued_count = len(_qrun_queue)
+        running_count = 0
+        by_framework = {}
+        by_model = {}
+        # 清理 5 分钟前已结束的记录
+        cutoff = time.time() - 300
+        for tid in list(_qrun_tasks.keys()):
+            t = _qrun_tasks[tid]
+            st = t.get("status")
+            if st in ("done", "error", "cancelled") and t.get("finished_at", 0) < cutoff:
+                _qrun_tasks.pop(tid, None)
+                continue
+            if st == "queued":
+                by_framework[t["framework"]] = by_framework.get(t["framework"], 0) + 1
+                key = t["model"] or "—"
+                by_model[key] = by_model.get(key, 0) + 1
+            elif st == "running":
+                running_count += 1
+        return jsonify({
+            "queued": queued_count,
+            "running": running_count,
+            "by_framework": by_framework,
+            "by_model": by_model,
+            "current_framework": current_framework,
+            "current_model": current_model,
+            "worker_started": _qrun_worker_started,
+        })
+
+
 # ── 主程序 ───────────────────────────────────────────────────────
 if __name__ == '__main__':
     import atexit
     atexit.register(shutdown)
     initialize()
     log.info(f"Framework Manager starting on port {PORT}")
+    # v1.2.0: 启动推理队列 worker（append-only：仅此一行新增）
+    _ensure_qrun_worker()
     app.run(host='0.0.0.0', port=PORT, threaded=True)

@@ -3316,63 +3316,58 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="card" id="manifest-gen-params-card" style="display:none;">
 <h2>📋 Manifest 生成参数</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-  <b>用于 ingest_gguf 生成新 manifest 时的默认参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中有 ⭐ 标记推荐值
+  <b>用于 ingest_gguf 生成新 manifest 时的默认参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中 ⭐ 为推荐值
 </p>
 <div class="form-row">
   <div class="form-group">
-    <label>num_ctx (上下文) ⭐131072</label>
-    <input type="number" id="mgen-num-ctx" list="mgen-num-ctx-list" placeholder="131072" min="512" max="1048576" step="512" style="min-width:120px;">
-    <datalist id="mgen-num-ctx-list">
+    <label>num_ctx (上下文)</label>
+    <select id="mgen-num-ctx" style="min-width:200px;">
       <option value="4096">4K (小模型/embedding)</option>
       <option value="8192">8K (bge-m3 专用)</option>
       <option value="16384">16K</option>
       <option value="32768">32K</option>
       <option value="65536">64K (qwen3:14b / gemma4)</option>
-      <option value="131072">⭐ 128K (推荐, qwen3.6 / qwen3-vl)</option>
+      <option value="131072" selected>⭐ 128K (推荐, qwen3.6 / qwen3-vl)</option>
       <option value="262144">256K (上限, 可能 OOM)</option>
-    </datalist>
+    </select>
   </div>
   <div class="form-group">
-    <label>temperature ⭐0.7</label>
-    <input type="number" id="mgen-temperature" list="mgen-temp-list" step="0.1" min="0" max="2" placeholder="0.7" style="min-width:100px;">
-    <datalist id="mgen-temp-list">
+    <label>temperature</label>
+    <select id="mgen-temperature" style="min-width:180px;">
       <option value="0.0">0.0 (完全确定性)</option>
       <option value="0.3">0.3 (保守/代码)</option>
-      <option value="0.7">⭐ 0.7 (推荐, 平衡)</option>
+      <option value="0.7" selected>⭐ 0.7 (推荐, 平衡)</option>
       <option value="1.0">1.0 (标准)</option>
       <option value="1.5">1.5 (发散/创作)</option>
-    </datalist>
+    </select>
   </div>
   <div class="form-group">
-    <label>top_p ⭐0.95</label>
-    <input type="number" id="mgen-top-p" list="mgen-top-p-list" step="0.05" min="0" max="1" placeholder="0.95" style="min-width:100px;">
-    <datalist id="mgen-top-p-list">
+    <label>top_p</label>
+    <select id="mgen-top-p" style="min-width:160px;">
       <option value="0.5">0.5 (保守)</option>
       <option value="0.8">0.8</option>
       <option value="0.9">0.9</option>
-      <option value="0.95">⭐ 0.95 (推荐)</option>
+      <option value="0.95" selected>⭐ 0.95 (推荐)</option>
       <option value="0.99">0.99 (发散)</option>
-    </datalist>
+    </select>
   </div>
   <div class="form-group">
-    <label>top_k ⭐20</label>
-    <input type="number" id="mgen-top-k" list="mgen-top-k-list" min="1" max="200" placeholder="20" style="min-width:100px;">
-    <datalist id="mgen-top-k-list">
+    <label>top_k</label>
+    <select id="mgen-top-k" style="min-width:150px;">
       <option value="10">10 (严格)</option>
-      <option value="20">⭐ 20 (推荐)</option>
+      <option value="20" selected>⭐ 20 (推荐)</option>
       <option value="40">40</option>
       <option value="80">80 (发散)</option>
-    </datalist>
+    </select>
   </div>
   <div class="form-group">
-    <label>repeat_penalty ⭐1.0</label>
-    <input type="number" id="mgen-repeat-penalty" list="mgen-rp-list" step="0.05" min="0.5" max="2" placeholder="1.0" style="min-width:100px;">
-    <datalist id="mgen-rp-list">
-      <option value="1.0">⭐ 1.0 (推荐, 不重复惩罚)</option>
+    <label>repeat_penalty</label>
+    <select id="mgen-repeat-penalty" style="min-width:180px;">
+      <option value="1.0" selected>⭐ 1.0 (推荐, 不重复惩罚)</option>
       <option value="1.1">1.1 (轻微)</option>
       <option value="1.2">1.2 (中等)</option>
       <option value="1.3">1.3 (强)</option>
-    </datalist>
+    </select>
   </div>
   <div class="form-group" style="justify-content:flex-end;">
     <button class="btn success" onclick="saveManifestGenParams()" id="btn-save-mgen-params">💾 保存</button>
@@ -4576,16 +4571,17 @@ let ollamaDefaultsCache = { _fallback: {}, models: {} };
 let ollamaFallbackOverride = {}; // 用户手动改 fallback 时的临时值
 let ollamaUserModified = false; // 用户是否手动改过当前模型行的输入框
 
-// 📋 Manifest 生成参数 (v1.1.17)
+// 📋 Manifest 生成参数 (v1.1.17, 改用 select 后 v1.1.17-patch2)
 async function loadManifestGenParams() {
   try {
     const data = await fetchJSON('/api/manifest_gen_params');
     const p = data.params || {};
-    document.getElementById('mgen-num-ctx').value = p.num_ctx ?? '';
-    document.getElementById('mgen-temperature').value = p.temperature ?? '';
-    document.getElementById('mgen-top-p').value = p.top_p ?? '';
-    document.getElementById('mgen-top-k').value = p.top_k ?? '';
-    document.getElementById('mgen-repeat-penalty').value = p.repeat_penalty ?? '';
+    // select 在所有 option 都不匹配 value 时会默认到第一个 option, 所以先设 selected 再校验
+    if (p.num_ctx) document.getElementById('mgen-num-ctx').value = String(p.num_ctx);
+    if (p.temperature !== undefined) document.getElementById('mgen-temperature').value = String(p.temperature);
+    if (p.top_p !== undefined) document.getElementById('mgen-top-p').value = String(p.top_p);
+    if (p.top_k) document.getElementById('mgen-top-k').value = String(p.top_k);
+    if (p.repeat_penalty !== undefined) document.getElementById('mgen-repeat-penalty').value = String(p.repeat_penalty);
   } catch (e) {
     console.error('加载 Manifest 生成参数失败:', e);
   }

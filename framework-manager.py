@@ -3428,11 +3428,9 @@ loras: /home/wangyc/my_loras"></textarea>
 </div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
-<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.7;">
-  <div>📂 <b>beellama</b>: <code>~/models/</code>（也可 <code>find ~/models /data -name "*.gguf"</code> 查看全部）</div>
-  <div>📂 <b>ollama</b>: <code>/data/ollama/models/</code>（权重 <code>blobs/</code>，索引 <code>manifests/</code>）</div>
-  <div>📂 <b>comfyui</b>: <code>/data/ComfyUI/models/</code>（<code>checkpoints/loras/diffusion_models/</code> 等）</div>
-  <div>💡 <b>添加 ollama 模型</b>：GGUF 放到 <code>blobs/</code> → 点 ➕ 添加/移除模型进列表 → 自动注册</div>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.78rem;color:var(--text-dim);line-height:1.7;">
+  <div>📂 <b>ollama / beellama</b>（共用）: <code>/data/ollama/models/blobs/</code> → 放完点 <b>➕ 添加/移除模型进列表</b> 自动注册</div>
+  <div>📂 <b>comfyui</b>: <code>/data/ComfyUI/models/</code>（<code>checkpoints/loras/diffusion_models/</code> 等子目录）</div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>

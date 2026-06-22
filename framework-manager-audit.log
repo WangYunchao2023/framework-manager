@@ -1,0 +1,222 @@
+[2026-06-17 14:04:21] 切换框架                 | → beellama                                         | ok
+[2026-06-17 14:05:36] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-17 14:39:52] 刷新模型列表               | 清空 hidden + 重扫; 各框架模型数: [('beellama', 4), ('ollama', 4), ('comfyui', 15)] | ok
+[2026-06-17 15:48:53] 刷新模型列表               | 清空 hidden + 重扫; 各框架模型数: [('beellama', 4), ('ollama', 4), ('comfyui', 15)] | ok
+[2026-06-17 15:56:40] 扫描可用模型               | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-17 15:56:40] 设置可见模型列表             | framework=beellama, total=4, visible=1, hidden=3   | ok
+[2026-06-17 15:57:03] 设置可见模型列表             | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-17 16:02:19] 刷新模型列表               | 清空 hidden + 重扫; 各框架模型数: [('beellama', 4), ('ollama', 4), ('comfyui', 15)] | ok
+[2026-06-17 16:03:31] 切换框架                 | → ollama                                           | ok
+[2026-06-17 16:03:43] 切换框架                 | → beellama                                         | ok
+[2026-06-17 16:08:54] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-17 16:09:06] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-17 16:24:12] 扫描可用模型               | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-17 21:01:15] 扫描可用模型               | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-17 21:01:23] 切换框架                 | → ollama                                           | ok
+[2026-06-17 21:01:29] 扫描可用模型               | framework=ollama, total=8, visible=8, hidden=0     | ok
+[2026-06-17 21:02:10] 切换框架                 | → beellama                                         | ok
+[2026-06-17 21:02:30] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-17 21:06:30] 切换框架                 | → ollama                                           | ok
+[2026-06-17 21:06:38] 加载模型                 | Ollama/qwen3:14b                                   | ok
+[2026-06-17 21:12:12] 空闲回退                 | 切框架 ollama->beellama                               | ok
+[2026-06-17 21:12:15] 切换框架                 | → beellama                                         | ok
+[2026-06-17 21:12:15] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-17 21:12:27] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-17 21:22:03] 切换框架                 | → ollama                                           | ok
+[2026-06-17 21:22:22] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-17 21:23:31] 切换框架                 | → beellama                                         | ok
+[2026-06-17 21:24:00] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-17 21:24:22] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-17 21:34:03] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-17 21:34:16] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 11:06:33] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 11:07:01] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3'] | ok
+[2026-06-18 11:07:20] 恢复默认值                | model=qwen3-14b, ctx=131072, parallel=2, ngl=99    | ok
+[2026-06-18 11:07:32] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 11:07:32] 自动重载                 | model=qwen3-14b                                    | ok
+[2026-06-18 11:07:39] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3'] | ok
+[2026-06-18 11:07:47] 恢复默认值                | model=qwen3-14b, ctx=131072, parallel=4, ngl=99    | ok
+[2026-06-18 11:07:58] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 11:07:58] 自动重载                 | model=qwen3-14b                                    | ok
+[2026-06-18 11:13:03] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 11:13:16] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 11:43:34] 切换框架                 | → ollama                                           | ok
+[2026-06-18 11:43:35] 切换框架                 | → beellama                                         | ok
+[2026-06-18 11:43:46] 保存 Ollama 全局参数       | params={'num_parallel': 2}                         | ok
+[2026-06-18 11:44:00] 保存 Ollama 全局参数       | params={'num_parallel': 1}                         | ok
+[2026-06-18 11:44:00] 保存 ollama 模型参数       | model=bge-m3:ctx8k, tag=bge-m3:ctx8k, ok=True      | ok
+[2026-06-18 11:44:07] 保存 ollama defaults   | fallback={'num_ctx': 131072, 'temperature': 0.8, 'top_p': 0.9}, models=['qwen3.6-q3'] | ok
+[2026-06-18 11:44:19] 切换框架                 | → beellama                                         | ok
+[2026-06-18 11:44:43] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 11:44:55] 切换框架                 | → comfyui                                          | ok
+[2026-06-18 11:44:55] 切换框架                 | → beellama                                         | ok
+[2026-06-18 11:44:58] 保存 ComfyUI 模型路径      | base=/data/ComfyUI, custom=['loras'], models=15    | ok
+[2026-06-18 11:45:05] 切换框架                 | → beellama                                         | ok
+[2026-06-18 11:50:06] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 11:50:19] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 12:07:32] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 12:07:42] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:09:44] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:09:50] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 12:10:23] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:13:40] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:18:41] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 12:18:54] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 12:24:57] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:24:57] 切换框架                 | → ollama                                           | ok
+[2026-06-18 12:25:24] 加载模型                 | Ollama/qwen3:14b                                   | ok
+[2026-06-18 12:28:08] 切换框架                 | → comfyui                                          | ok
+[2026-06-18 12:28:11] 加载模型                 | ComfyUI/cogvideoX-5b/                              | ok
+[2026-06-18 12:28:12] 加载模型                 | ComfyUI/flux1-dev-fp8.safetensors                  | ok
+[2026-06-18 12:28:13] 加载模型                 | ComfyUI/sulphur_dev-Q4_K_M.gguf                    | ok
+[2026-06-18 12:28:25] 扫描可用模型               | framework=comfyui, total=15, visible=14, hidden=1  | ok
+[2026-06-18 12:28:25] 扫描可用模型               | framework=comfyui, total=15, visible=14, hidden=1  | ok
+[2026-06-18 12:28:25] 刷新模型列表               | 清空 hidden + 重扫; 各框架模型数: [('beellama', 4), ('ollama', 4), ('comfyui', 15)] | ok
+[2026-06-18 12:28:31] 扫描可用模型               | framework=comfyui, total=15, visible=15, hidden=0  | ok
+[2026-06-18 12:28:31] 设置可见模型列表             | framework=comfyui, total=15, visible=15, hidden=0  | ok
+[2026-06-18 12:28:41] 保存默认值文件              | fallback={'ctx_size': 131072, 'ngpu_layers': 99, 'parallel': 2}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3'] | ok
+[2026-06-18 12:28:43] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:28:43] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:29:18] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 12:29:20] 恢复默认值                | model=qwen3.6-q3, ctx=65536, parallel=2, ngl=99    | ok
+[2026-06-18 12:29:24] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:31:34] 设置 beellama 模型参数     | model=qwen3.6-q3, ctx=65536, parallel=2, ngl=99    | ok
+[2026-06-18 12:31:43] 保存默认值文件              | fallback={'ctx_size': 131072, 'ngpu_layers': 99, 'parallel': 2}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3'] | ok
+[2026-06-18 12:31:43] 设置 beellama 模型参数     | model=qwen3.6-q3, ctx=131072, parallel=1, ngl=99   | ok
+[2026-06-18 12:32:11] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:34:54] 切换框架                 | → ollama                                           | ok
+[2026-06-18 12:35:44] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-18 12:40:54] 空闲回退                 | 切框架 ollama->beellama                               | ok
+[2026-06-18 12:40:56] 切换框架                 | → beellama                                         | ok
+[2026-06-18 12:40:58] 切换框架                 | → beellama                                         | ok
+[2026-06-18 13:46:32] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 13:47:00] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 13:47:00] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 13:52:01] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 13:52:58] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 15:58:09] 刷新模型列表               | 清空 hidden + 重扫; 各框架模型数: [('beellama', 5), ('ollama', 4), ('comfyui', 15)] | ok
+[2026-06-18 15:58:15] 设置 beellama 模型参数     | model=qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf, ctx=131072, parallel=1, ngl=99 | ok
+[2026-06-18 15:58:15] 保存默认值文件              | fallback={'ctx_size': 131072, 'ngpu_layers': 99, 'parallel': 2}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-18 15:58:22] 迁移老模型 per-model      | 补全字段: qwen3.6-uncensored.ctx_size=131072, qwen3.6-uncensored.parallel=1, qwen3.6-uncensored.ngpu_layers=99 | ok
+[2026-06-18 15:58:27] 切换框架                 | → beellama                                         | ok
+[2026-06-18 16:01:28] 切换框架                 | → beellama                                         | ok
+[2026-06-18 16:03:13] 设置 beellama 模型参数     | model=qwen3.6-uncensored, ctx=131072, parallel=1, ngl=99 | ok
+[2026-06-18 16:05:27] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:05:27] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:13:03] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 16:14:02] 切换框架                 | → beellama                                         | ok
+[2026-06-18 16:14:17] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:14:17] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:16:02] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:18:05] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:23:14] 空闲回退                 | 加载默认模型 qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 16:24:39] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:24:40] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:25:07] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:25:42] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:26:29] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 16:29:01] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:30:27] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-18 16:30:35] 恢复默认值                | model=qwen3.6-q3, ctx=100000, parallel=1, ngl=99   | ok
+[2026-06-18 16:30:49] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:30:49] 自动重载                 | model=qwen3.6-q3                                   | ok
+[2026-06-18 16:31:27] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-18 16:31:29] 保存并应用参数              | model=qwen3.6-q3, ctx=None, parallel=1, ngl=99     | ok
+[2026-06-18 16:35:53] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-18 16:36:39] 初始化新模型 per-model     | model=qwen3.6-q3, ctx=131072, parallel=1           | ok
+[2026-06-18 16:36:53] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 16:36:53] 自动重载                 | model=qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf | ok
+[2026-06-18 16:53:27] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 16:53:39] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 18:23:23] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 18:23:37] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 18:24:47] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 18:29:09] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 18:31:20] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 18:37:43] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-18 18:47:02] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 18:48:19] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 18:54:33] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 18:54:47] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 18:59:49] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:00:03] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:05:05] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:05:19] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:10:33] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:10:48] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:19:02] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:19:19] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:26:21] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:26:35] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:32:01] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:32:16] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:37:17] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:37:32] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:42:58] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:43:12] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:49:50] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:50:05] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 19:55:06] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 19:55:21] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 20:01:23] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 20:01:37] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 20:08:39] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-18 20:08:54] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-18 23:02:43] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-19 07:02:50] 切换框架                 | → ollama                                           | ok
+[2026-06-19 07:03:18] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-19 08:46:00] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-19 09:20:01] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': None, 'batch_size': None, 'flash_attention': 1} | ok
+[2026-06-19 09:20:22] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-19 09:36:04] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-19 09:42:11] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 12:10:41] 切换框架                 | → ollama                                           | ok
+[2026-06-21 12:13:05] 保存 ollama defaults   | fallback={'num_ctx': 65536, 'temperature': 0.7, 'top_p': 0.9}, models=['qwen3.6-q3'] | ok
+[2026-06-21 12:21:26] 切换框架                 | → beellama                                         | ok
+[2026-06-21 12:23:51] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-21 12:39:52] 切换框架                 | → ollama                                           | ok
+[2026-06-21 13:38:32] 保存 ollama defaults   | fallback={'num_ctx': 65536, 'temperature': 0.7, 'top_p': 0.9}, models=['qwen3.6-q3'] | ok
+[2026-06-21 13:38:39] 保存 ollama 模型参数       | model=qwen3.6-q3:latest, tag=qwen3.6-q3:ctx128k, ok=True | ok
+[2026-06-21 13:51:35] 切换框架                 | → beellama                                         | ok
+[2026-06-21 13:51:43] 切换框架                 | → ollama                                           | ok
+[2026-06-21 13:52:09] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 14:21:02] 切换框架                 | → beellama                                         | ok
+[2026-06-21 14:25:05] 切换框架                 | → ollama                                           | ok
+[2026-06-21 14:25:07] 切换框架                 | → ollama                                           | ok
+[2026-06-21 14:29:00] 切换框架                 | → ollama                                           | ok
+[2026-06-21 14:29:32] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 14:39:24] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-21 14:45:26] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 14:47:02] 加载模型                 | Ollama/qwen3:14b-ctx64k                            | ok
+[2026-06-21 16:08:33] 加载模型                 | Ollama/qwen3-vl:ctx64k                             | ok
+[2026-06-21 17:09:38] 切换框架                 | → ollama                                           | ok
+[2026-06-21 17:09:59] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-21 17:11:17] 保存 ollama 模型参数       | model=gemma4:26b-ctx64k, tag=gemma4:ctx128k, ok=True | ok
+[2026-06-21 17:19:10] 加载模型                 | Ollama/gemma4:ctx128k                              | ok
+[2026-06-21 17:22:19] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 18:12:42] 切换框架                 | → ollama                                           | ok
+[2026-06-21 18:12:45] 切换框架                 | → ollama                                           | ok
+[2026-06-21 18:14:11] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-21 18:15:48] 切换框架                 | → beellama                                         | ok
+[2026-06-21 18:16:13] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-21 21:50:09] 切换框架                 | → beellama                                         | ok
+[2026-06-21 22:16:42] 切换框架                 | → ollama                                           | ok
+[2026-06-21 22:18:26] 切换框架                 | → comfyui                                          | ok
+[2026-06-21 22:19:23] 切换框架                 | → beellama                                         | ok
+[2026-06-21 22:19:27] 切换框架                 | → ollama                                           | ok
+[2026-06-21 22:20:09] 切换框架                 | → beellama                                         | ok
+[2026-06-21 22:26:52] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-21 22:27:25] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-21 22:29:22] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-22 08:14:28] 切换框架                 | → ollama                                           | ok
+[2026-06-22 08:14:40] 扫描可用模型               | framework=ollama, total=5, visible=5, hidden=0     | ok
+[2026-06-22 08:15:02] 加载模型                 | Ollama/qwen3.6-uncensored:latest                   | ok
+[2026-06-22 08:20:13] 空闲回退                 | 切框架 ollama->beellama                               | ok
+[2026-06-22 08:20:15] 切换框架                 | → beellama                                         | ok
+[2026-06-22 08:22:48] 切换框架                 | → comfyui                                          | ok
+[2026-06-22 08:27:54] 空闲回退                 | 切框架 comfyui->beellama                              | ok
+[2026-06-22 08:27:56] 切换框架                 | → beellama                                         | ok
+[2026-06-22 08:27:56] 空闲回退                 | 加载默认模型 qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf | ok
+[2026-06-22 08:28:12] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-22 08:39:50] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-22 10:27:24] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok

@@ -4,9 +4,41 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.10
+版本：1.1.14
 
 更新日志:
+- v1.1.14: ollama 模型列表显示优化 + dedupe 隐藏不带 ctx 基础 tag
+  + bge/embed 不再硬编码排除, 走 hidden 列表默认隐藏 (可见可手动启用)
+  + _load_hidden() 首次启动自动把 bge/embed 加入 ollama hidden
+  * _dedupe_ollama_models: 无衍生 tag 时不再返回基础名 (避免默认 2K ctx)
+  + 白名单 qwen3.6-uncensored (历史, 已配 num_ctx 131072)
+  - 移除 get_ollama_models / fallback 路径的 bge 硬编码 continue
+  - D 修复: 新建 qwen3:14b-ctx96k tag (65536 → 98304), 删旧 :ctx64k
+  - A 修复: 新建 gemma4:26b-ctx96k tag (Modelfile 131072 → 98304), 删旧 :ctx64k
+  + openclaw models.json: 加 qwen3.6-uncensored 条目, 删 qwen2.5:14b/qwen2.5vl:latest
+  + openclaw models.json: gemma4:26b contextWindow 256000 → 98304
+  * vram_switcher_state.json: resident_model qwen2.5:14b → qwen3.6-q3:ctx128k
+  * MEMORY.md: 常驻模型同步更新
+- v1.1.13: qwen3-vl 模型 OOM 修复
+  - 问题：qwen3-vl:ctx128k 加载时报 "cudaMalloc failed: out of memory (1.4GB)"
+  - 根因：2080Ti (22GB) 显存碎片化 + vision 模型需要大块连续 buffer
+         Ollama 0.30.0-rc23 分配 128K KV cache 时失败
+  - 修复：推荐值从 128K → 64K (实际测试可正常加载)
+  - 修改: 下拉框默认从 128K 改为 64K，Modelfile 同步更新
+  - 保留：用户仍可以手动选择 128K/256K，但可能 OOM
+- v1.1.12: Bug fix - ollama defaults API 返回空数据/保存失败
+  - 症状：点击"保存 ollama defaults"按钮后报错，API 返回空数据
+  - 根因：defaults.json 文件历史格式是顶层直接 _fallback/models (为 beellama 设计)
+         v1.1.8-patch2 添加 ollama 支持后，API 期望嵌套结构 defaults["ollama"]
+         但没有向后兼容迁移逻辑，导致旧格式文件读取时 ollama 段缺失
+  - 修复：_load_defaults() 增加迁移逻辑 - 检测到旧格式时自动包装到 ollama 段并保存
+  - 影响：首次加载时自动迁移旧格式，之后 API 正常读写
+- v1.1.11: Bug fix - ollama 默认值卡片输入值被清空
+  - 症状：在 ollama 默认值卡片中填写"当前模型默认值"的 num_ctx/temperature/top_p 时，值写进去后马上消失
+  - 根因：renderOllamaDefaults() 函数中，设置 input value 的代码被放在 if (!ncElGlobal) 块内，只有首次渲染时才执行
+          后续渲染（如切换模型后刷新）时跳过 value 设置，导致 input 被重置为空
+  - 修复：将 value 设置逻辑移到 if 块外，确保每次渲染都更新 input 值
+  - 影响范围：仅影响 ollama 默认值卡片的"当前模型默认值"输入框
 - v1.1.10: Bug fixes 升版 (全量测试发现)
   - 整合 v1.1.8-patch3 (3 个 bug fix: ollama dedupe + timeout 180s + gemma alias)
   - 代码相对 v1.1.8-patch3 无任何改动
@@ -336,10 +368,21 @@ def _load_defaults():
             return defaults
     try:
         with open(DEFAULTS_FILE, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
+        # v1.1.18: 向后兼容迁移 - 如果文件是旧格式 (顶层直接 _fallback/models)，自动包装到 ollama 段
+        if "ollama" not in data and "_fallback" in data:
+            # 这是旧格式，迁移到新格式
+            log.info("检测到旧格式 defaults.json，迁移到 ollama 段")
+            data["ollama"] = {
+                "_fallback": data.get("_fallback", {}).copy(),
+                "models": {k: v.copy() for k, v in data.get("models", {}).items()}
+            }
+            # 保留旧格式在顶层 (向后兼容 beellama 等其他框架)
+            _save_defaults(data)
+        return data
     except Exception as e:
-        log.error(f"加载默认值文件失败: {e}")
-        return {"_fallback": _DEFAULT_FALLBACK.copy(), "models": {}}
+        log.error(f"加载默认值文件失败：{e}")
+        return {"_fallback": _DEFAULT_FALLBACK.copy(), "models": {}, "ollama": {"_fallback": {}, "models": {}}}
 
 
 def _save_defaults(defaults):
@@ -355,9 +398,27 @@ def _save_defaults(defaults):
 
 
 def _load_hidden():
-    """加载隐藏模型列表, 不存在则返回空结构"""
+    """加载隐藏模型列表, 不存在则返回空结构
+    v1.1.14: 首次启动时自动把 bge/embed 类模型加入 ollama hidden
+              (可见但默认不在下拉列表, 用户可手动添加/移出)
+    """
     if not os.path.exists(HIDDEN_MODELS_FILE):
-        return {"beellama": [], "ollama": [], "comfyui": []}
+        # 首次启动: 扫描 ollama 列表, 把 bge/embed 默认加入 hidden
+        default_hidden = {"beellama": [], "ollama": [], "comfyui": []}
+        try:
+            # 直接调 subprocess 避免循环依赖
+            import subprocess as _sp
+            out = _sp.check_output(["ollama", "list"], text=True, stderr=_sp.DEVNULL, timeout=5)
+            for line in out.strip().split("\n")[1:]:
+                if line.strip():
+                    name = line.split()[0].lower()
+                    if name.startswith("bge") or "embed" in name:
+                        default_hidden["ollama"].append(line.split()[0])
+        except Exception:
+            pass
+        # 写文件固化
+        _save_hidden(default_hidden)
+        return default_hidden
     try:
         with open(HIDDEN_MODELS_FILE, 'r') as f:
             data = json.load(f)
@@ -429,7 +490,7 @@ def get_nvidia_vram():
         return (0, 0)
 
 def _dedupe_ollama_models(raw_models):
-    """v1.1.8-patch3: 从原始 tag 列表中, 优先保留带 ctx 后缀的衍生 tag
+    """v1.1.8-patch3 + v1.1.14: 从原始 tag 列表中, 优先保留带 ctx 后缀的衍生 tag
     例: ['qwen3:14b-ctx64k', 'qwen3:14b', 'gemma4:26b', 'gemma4:26b-ctx64k']
         -> ['gemma4:26b-ctx64k', 'qwen3:14b-ctx64k']  (隐藏基础名, 避免走默认 2K ctx)
     注意: ollama tag 命名不规范, 上下文后缀混用 '-ctx' 和 ':ctx':
@@ -437,6 +498,10 @@ def _dedupe_ollama_models(raw_models):
       - 长名 (qwen3.6-q3:ctx128k, qwen3-vl:ctx128k) 用 ':'
     另外: ollama Hub 拉取的原始 tag 会自动建 :latest 别名, 也视为基础名
       - qwen3.6-q3 / qwen3.6-q3:latest / qwen3.6-q3:ctx128k -> 只保留 :ctx128k
+    v1.1.14 修改: 不再保留 ':latest' / 基础名
+      - 即便 base 没有衍生 tag, 也只返回衍生 tag (空集时不返回)
+      - 避免用户加载走默认 2048 ctx 的基础 tag
+      - 例外: qwen3.6-uncensored:latest (历史, 实际已配 num_ctx 131072) → 保留
     """
     import re
     # 同时识别 :ctx<N>k 和 -ctx<N>k 后缀
@@ -444,6 +509,8 @@ def _dedupe_ollama_models(raw_models):
     ctx_k_re = re.compile(r'ctx(\d+)k')
     # 去掉 :latest / -ctx<N>k 后缀得到 base name
     base_strip_re = re.compile(r':latest$|[-:]ctx\d+k$')
+    # v1.1.14: 例外白名单 (这些 tag 虽不带 :ctx 后缀, 但实际 num_ctx > 2048)
+    _NUM_CT_OK_BASE = {"qwen3.6-uncensored"}  # ollama show 显示 num_ctx=131072
     by_base = {}  # base_name -> [tag, ...]
     for m in raw_models:
         base = base_strip_re.sub('', m)
@@ -454,9 +521,10 @@ def _dedupe_ollama_models(raw_models):
         if ctx_tags:
             # 只保留衍生 tag (按 ctx 升序)
             result.extend(sorted(ctx_tags, key=lambda x: int(ctx_k_re.search(x).group(1))))
-        else:
-            # 基础名 (含 :latest)
+        elif base in _NUM_CT_OK_BASE:
+            # v1.1.14 例外: 已知 num_ctx > 2048 的基础 tag, 保留
             result.extend(tags)
+        # else: base 既无衍生 tag 又不在白名单 → 不返回 (默认 2K, 加载必踩坑)
     return sorted(set(result))
 
 
@@ -477,9 +545,7 @@ def get_ollama_models():
         for line in lines:
             if line.strip():
                 name = line.split()[0]
-                # 排除 bge-m3 等非 LLM 模型
-                if name.lower().startswith('bge-m3'):
-                    continue
+                # v1.1.14: 不再硬编码排除 bge/embed, 改为走 hidden 列表 (默认隐藏, 可手动添加/移出)
                 raw_models.append(name)
         return _dedupe_ollama_models(raw_models)
     except Exception:
@@ -503,8 +569,7 @@ def get_ollama_models():
                         continue
                     tag = tag_file.name
                     name = model_dir.name if tag == "latest" else f"{model_dir.name}:{tag}"
-                    if name.lower().startswith('bge'):
-                        continue
+                    # v1.1.14: 不再硬编码排除 bge, 走 hidden 列表
                     # 跳过衍生 tag：layers 中有 from 字段且 from 指向本地同目录下的 tag（排除自身）
                     # 原始 tag 的 from 可能指向自身（如 gemma4:26b 的 from="gemma4:26b"），不算衍生
                     try:
@@ -1367,16 +1432,38 @@ def load_model_for_framework(model_name):
 
         _loading_state.update({"message": f"正在使用 Ollama 加载 {model_name}...", "progress": 20})
 
-        # 1. 先卸载当前模型
-        unload_ollama_models()
-
-        _loading_state.update({"message": f"正在使用 Ollama 加载 {model_name}...", "progress": 40})
-
-        # 2. 通过 /api/generate 加载模型到显存
+        # v1.1.14: 先定义 ollama_model_name (用于后面的检查)
         ollama_model_name = model_name
         if ':' not in model_name:
             ollama_model_name = model_name + ':latest'
 
+        # 检查当前模型是否已在内存中, 避免不必要的 unload+reload
+        try:
+            ps_req = urllib.request.Request("http://localhost:11434/api/ps")
+            ps_resp = urllib.request.urlopen(ps_req, timeout=5)
+            ps_data = json.loads(ps_resp.read())
+            loaded_names = [m.get("name", "") for m in ps_data.get("models", [])]
+        except Exception:
+            loaded_names = []
+
+        # 判断当前已加载的模型名称是否匹配目标模型
+        already_loaded = False
+        target_tag = ollama_model_name
+        for ln in loaded_names:
+            # 比较 base name (去掉 tag)
+            ln_base = ln.split(':')[0] if ':' in ln else ln
+            target_base = target_tag.split(':')[0]
+            if ln_base == target_base:
+                already_loaded = True
+                break
+
+        if not already_loaded:
+            # v1.1.14: 仅在模型未加载时才卸载当前所有模型
+            unload_ollama_models()
+
+        _loading_state.update({"message": f"正在使用 Ollama 加载 {model_name}...", "progress": 40})
+
+        # 2. 通过 /api/generate 加载模型到显存
         payload = json.dumps({
             "model": ollama_model_name,
             "prompt": "",
@@ -1878,6 +1965,11 @@ def _extract_short_model_name(model_path):
     m = re.match(r"gemma-?([0-9]+)-?([0-9]+b)", basename.lower())
     if m:
         return f"gemma-{m.group(1)}-{m.group(2)}"
+    # Qwen3.6-35B-A3B-Uncensored-... / Qwen3-30B-A3B-abliterated-... -> qwen3.6-uncensored
+    # 简化短名: 去掉 -A<N>B 专家数
+    if re.search(r"qwen[0-9.]+-[0-9]+b-a[0-9]+b[-_]?(uncensored|abliterated)", basename.lower()):
+        ver = re.match(r"qwen([0-9.]+)", basename.lower()).group(1)
+        return f"qwen{ver}-uncensored"
     return basename
 
 @app.route("/api/stop_all", methods=["POST"])
@@ -2230,9 +2322,10 @@ def api_get_ollama_model_params():
 
 @app.route("/api/ollama_model_params", methods=["POST"])
 def api_set_ollama_model_params():
-    """保存 ollama per-model 参数 → 写 Modelfile → ollama create 重建 tag
+    global current_model, current_framework  # v1.1.13
+    """保存 ollama per-model 参数 -> 写 Modelfile -> ollama create 重建 tag
     body: {model, num_ctx, temperature, top_p, top_k, repeat_penalty}
-    - num_ctx 必填, 改变会创建新 tag (e.g. ctx128k→ctx256k)
+    - num_ctx 必填，改变会创建新 tag (e.g. ctx128k->ctx256k)
     - 其他字段可省略 (保留原值) 或 传 null/0 (从 Modelfile 删除)
     """
     if current_framework != "ollama":
@@ -2289,13 +2382,45 @@ def api_set_ollama_model_params():
             "intended_tag": new_tag,
             "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
         }), 500
+    # v1.1.13: 自动加载新 tag (如果当前框架是 ollama 且新 tag 存在)
+    auto_loaded = False
+    try:
+        import urllib.request
+        # 检查新 tag 是否在 ollama list 中
+        tags_resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5)
+        tags_data = json.loads(tags_resp.read())
+        available_tags = [m.get("name", "") for m in tags_data.get("models", [])]
+        if new_tag in available_tags:
+            # 通过 /api/generate 加载新 tag 到显存
+            payload = json.dumps({
+                "model": new_tag,
+                "prompt": "",
+                "stream": False,
+                "keep_alive": -1
+            }).encode()
+            req = urllib.request.Request(
+                "http://localhost:11434/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=300)
+            # 更新全局 current_model
+            current_model = new_tag
+            auto_loaded = True
+            log.info(f"自动加载新 tag: {new_tag}")
+    except Exception as e:
+        log.warning(f"自动加载新 tag 失败: {e}")
+        # 不阻断成功返回，前端会提示用户手动加载
+    
     return jsonify({
         "status": "ok",
         "model": model,
         "modelfile": mf_path,
         "tag": new_tag,
+        "auto_loaded": auto_loaded,
         "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
-        "message": f"已保存 {model} 参数并重建 tag {new_tag}"
+        "message": f"已保存 {model} 参数并重建 tag {new_tag}" + ("，已自动加载" if auto_loaded else "，请手动加载")
     })
 
 
@@ -2335,7 +2460,8 @@ def api_set_ollama_defaults():
 @app.route("/api/restore_ollama_default_model_params", methods=["POST"])
 def api_restore_ollama_default_model_params():
     """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
-    复用 api_set_ollama_model_params 的逻辑 (传入 num_ctx 等于从 defaults 读)
+    优先级: models[name] > _fallback (回退)
+    v1.1.13: 修复 fallback 空 dict 时的处理 + num_ctx 默认值
     """
     if current_framework != "ollama":
         return jsonify({"error": "当前不是 Ollama 框架"}), 400
@@ -2345,13 +2471,21 @@ def api_restore_ollama_default_model_params():
         return jsonify({"error": "未指定 model"}), 400
     base_name = model.split(":")[0]
     defaults = _load_defaults().get("ollama", {})
-    model_defaults = defaults.get("models", {}).get(base_name)
+    fb = defaults.get("_fallback", {}) or {}
+    models_cfg = defaults.get("models", {}) or {}
+    # 优先用 per-model, 回退到 _fallback
+    model_defaults = models_cfg.get(base_name)
+    if not model_defaults:
+        model_defaults = {k: v for k, v in fb.items() if v is not None}
     if not model_defaults:
         return jsonify({
-            "error": f"ollama defaults 中没有「{base_name}」记录, 请先在「🎯 ollama 默认值」卡中编辑",
+            "error": f"ollama defaults 中没有「{base_name}」记录且 _fallback 也为空，请先在「🎯 ollama 默认值」卡中编辑",
             "short_name": base_name,
             "missing_in_defaults": True,
         }), 404
+    # v1.1.13: num_ctx 必须有默认值 (否则 api_set_ollama_model_params 会报错)
+    if 'num_ctx' not in model_defaults or not model_defaults['num_ctx']:
+        model_defaults['num_ctx'] = 131072
     # 复用 set_ollama_model_params (内含 Modelfile 写 + ollama create)
     payload = dict(model_defaults)
     payload["model"] = model
@@ -2749,7 +2883,10 @@ INDEX_HTML = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>框架管理器</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>框架管理器 v1.1.17</title>
 <style>
 :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--text-dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--orange:#d29922}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2866,6 +3003,9 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <!-- ⚙️ Ollama 全局参数 (v1.1.8-patch2 新增, 切换到 ollama 时显示) -->
 <div class="card" id="ollama-params-card" style="display:none;">
 <h2>⚙️ Ollama 全局参数</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+  优先级：<b>模型专属参数</b> > <b>全局参数</b> > Ollama 内置默认 · 修改后需重启 Ollama 服务
+</p>
 <div class="form-row">
   <div class="form-group">
     <label>KEEP_ALIVE (空闲后卸载时间, -1=永远驻留)</label>
@@ -2912,7 +3052,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
       <option value="8192">8K (省显存)</option>
       <option value="32768">32K</option>
       <option value="65536">64K</option>
-      <option value="131072" selected>128K ⭐推荐</option>
+      <option value="65536" selected>64K ⭐推荐</option>
       <option value="262144">256K</option>
     </select>
   </div>
@@ -2938,14 +3078,14 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
   </div>
 </div>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
-💡 修改 <b>num_ctx</b> 会创建新 tag (如 qwen3.6-q3:ctx128k), 旧 tag 保留 · 其他字段改后 tag 名不变 · 保存后请手动 <code>ollama run 新tag</code> 加载
+💡 <b>优先级最高</b> · 修改 <b>num_ctx</b> 会创建新 tag (如 qwen3.6-q3:ctx128k), 旧 tag 保留 · 其他字段改后 tag 名不变 · 保存后请手动 <code>ollama run 新tag</code> 加载
 </p>
 </div>
 <!-- 🎯 Ollama 默认值 (v1.1.8-patch2 新增, 切到 ollama 时显示) -->
 <div class="card" id="ollama-defaults-card" style="display:none;">
 <h2>🎯 Ollama 默认值 <span id="ollama-defaults-current-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-仅显示当前加载 ollama 模型的默认值。保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code> 的 <code>ollama</code> 段。点「🔄 恢复默认」会把当前模型值复制到 Modelfile 并重建 tag。
+<b>仅用于初始化/恢复</b> · 不参与 runtime 优先级 · 保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code> 的 <code>ollama</code> 段 · 点「🔄 恢复默认」会把值写入模型专属参数
 </p>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;">
   <div style="color:var(--accent);font-size:0.82rem;margin-bottom:6px;">⚙️ Ollama 统一默认 (_fallback)</div>
@@ -3076,7 +3216,7 @@ loras: /home/wangyc/my_loras"></textarea>
 💡 🔄 恢复默认 = 从「默认值」卡复制到 per-model · 留空保存 = 清除该字段（wrapper 启动会报错）
 </p>
 </div>
-<div class="card">
+<div class="card" id="defaults-card">
 <h2>🎯 默认值 <span id="defaults-current-model-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
 仅显示当前加载模型的默认值 (保存在 <code>~/.openclaw/config/framework-manager-defaults.json</code>)。点「🔄 恢复默认」会把当前模型值复制到 per-model 并重启 beellama。
@@ -3305,6 +3445,15 @@ async function refresh() {
       } else {
         comfyuiParamsCard.style.display = 'none';
         comfyuiPathsCard.style.display = 'none';
+      }
+    }
+    // 🎯 默认值卡片 (通用, beellama 专用) — ollama/comfyui 时隐藏
+    var defaultsCard = document.getElementById('defaults-card');
+    if (defaultsCard) {
+      if (fw === 'beellama') {
+        defaultsCard.style.display = 'block';
+      } else {
+        defaultsCard.style.display = 'none';
       }
     }
     // ⚙️ 显示/隐藏 ollama 参数卡片 (v1.1.8-patch2)
@@ -4043,7 +4192,13 @@ async function saveOllamaModelParams() {
     };
     const resp = await fetchJSON('/api/ollama_model_params', 'POST', payload);
     if (resp.status === 'ok') {
-      showToast('✅ ' + (resp.message || '已保存'), 'success', 5000);
+      const autoMsg = resp.auto_loaded ? '✅ 已保存并自动加载新 tag' : '✅ 已保存，新 tag 已就绪';
+      showToast(autoMsg, 'success', 5000);
+      // 如果自动加载成功，刷新状态
+      if (resp.auto_loaded && resp.tag) {
+        currentModel = resp.tag;  // 更新前端 currentModel
+        await refresh();  // 刷新 UI
+      }
     } else if (resp.status === 'partial') {
       showToast('⚠️ ' + (resp.warning || '部分成功'), 'error', 6000);
     } else {
@@ -4085,12 +4240,17 @@ async function resetOllamaModelParams() {
 }
 
 // 🎯 Ollama defaults 卡片 (v1.1.8-patch2)
+// v1.1.11: 无 per-model 记录时, 自动从 _fallback 填充输入框 + save 时自动创建 models entry
+// v1.1.15: 添加 userModified 标记, refresh() 不覆盖用户已修改的值
 let ollamaDefaultsCache = { _fallback: {}, models: {} };
+let ollamaFallbackOverride = {}; // 用户手动改 fallback 时的临时值
+let ollamaUserModified = false; // 用户是否手动改过当前模型行的输入框
 
 async function loadOllamaDefaults() {
   try {
     const data = await fetchJSON('/api/ollama_defaults');
     ollamaDefaultsCache = data || { _fallback: {}, models: {} };
+    console.log('[DEBUG] loadOllamaDefaults called, cache:', JSON.stringify(ollamaDefaultsCache));
     renderOllamaDefaults();
   } catch (e) {
     showToast('加载 ollama defaults 失败：' + e.message, 'error');
@@ -4111,34 +4271,76 @@ function renderOllamaDefaults() {
     badge.textContent = '(未加载 ollama 模型)';
     nameEl.textContent = '—';
     rowEl.innerHTML = '<div style="color:var(--text-dim);padding:6px 0;">加载 ollama 模型后, 在此编辑该模型的默认值</div>';
+    // 重置 modified 标记，因为 DOM 被清空了
+    window._odf_nc = null; window._odf_tm = null; window._odf_tp = null;
     return;
   }
   const baseName = currentModel.split(':')[0];
   badge.textContent = `(当前: ${baseName})`;
 
+  // v1.1.17: 统一渲染——始终只更新已有 DOM, 绝不 innerHTML
   const matchedParams = (ollamaDefaultsCache.models || {})[baseName];
-  if (matchedParams) {
-    nameEl.textContent = baseName;
+  nameEl.textContent = baseName + (matchedParams ? ' ✓' : ' (使用 _fallback)');
+
+  // v1.1.17: 全局引用 input 元素, 避免每次 getElementById
+  let ncElGlobal = window._odf_nc || null;
+  let tmElGlobal = window._odf_tm || null;
+  let tpElGlobal = window._odf_tp || null;
+
+  if (!ncElGlobal) {
+    // 首次渲染: 创建 input 元素并追加到 row
     rowEl.innerHTML = `
       <div class="ollama-defaults-row" data-name="${baseName}" style="display:flex;gap:8px;align-items:center;padding:6px 0;flex-wrap:wrap;">
-        <input type="number" class="odf-num-ctx" placeholder="num_ctx" value="${matchedParams.num_ctx ?? ''}" min="512" max="1048576" step="512" style="width:110px;">
-        <input type="number" class="odf-temp" placeholder="temp" value="${matchedParams.temperature ?? ''}" step="0.1" min="0" max="2" style="width:80px;">
-        <input type="number" class="odf-top-p" placeholder="top_p" value="${matchedParams.top_p ?? ''}" step="0.05" min="0" max="1" style="width:80px;">
-        <span style="color:var(--text-dim);font-size:0.78rem;margin-left:8px;">(将保存到 <code>${baseName}</code>)</span>
+        <input type="number" id="odf-num-ctx-current" placeholder="num_ctx" min="512" max="1048576" step="512" style="width:110px;">
+        <input type="number" id="odf-temp-current" placeholder="temp" step="0.1" min="0" max="2" style="width:80px;">
+        <input type="number" id="odf-top-p-current" placeholder="top_p" step="0.05" min="0" max="1" style="width:80px;">
+        <span class="odf-status-text" style="color:var(--text-dim);font-size:0.78rem;margin-left:8px;"></span>
       </div>
     `;
-  } else {
-    nameEl.textContent = baseName;
-    rowEl.innerHTML = `
-      <div style="color:var(--orange);padding:6px 0;font-size:0.88rem;">
-        ⚠️ ollama defaults 中没有「${baseName}」记录。<br>
-        在此手动填值后保存, 后续加载该模型时可用「🔄 恢复默认值」一键应用。
-      </div>
-    `;
+    ncElGlobal = document.getElementById('odf-num-ctx-current');
+    tmElGlobal = document.getElementById('odf-temp-current');
+    tpElGlobal = document.getElementById('odf-top-p-current');
+    window._odf_nc = ncElGlobal;
+    window._odf_tm = tmElGlobal;
+    window._odf_tp = tpElGlobal;
+    // 绑定 oninput (只绑一次)
+    ncElGlobal.oninput = () => {
+      ollamaFallbackOverride.num_ctx = parseInt(ncElGlobal.value) || null;
+      ollamaUserModified = true;
+    };
+    tmElGlobal.oninput = () => {
+      ollamaFallbackOverride.temperature = parseFloat(tmElGlobal.value) || null;
+      ollamaUserModified = true;
+    };
+    tpElGlobal.oninput = () => {
+      ollamaFallbackOverride.top_p = parseFloat(tpElGlobal.value) || null;
+      ollamaUserModified = true;
+    };
+  }
+  // 每次渲染都更新 input value (v1.1.18 修复：之前后续渲染不更新 value，导致用户输入被清空)
+  const initValNumCtx = matchedParams?.num_ctx ?? fb.num_ctx;
+  const initValTemp = matchedParams?.temperature ?? fb.temperature;
+  const initValTopP = matchedParams?.top_p ?? fb.top_p;
+  if (ncElGlobal) ncElGlobal.value = (initValNumCtx !== null && initValNumCtx !== '') ? String(initValNumCtx) : '';
+  if (tmElGlobal) tmElGlobal.value = (initValTemp !== null && initValTemp !== '') ? String(initValTemp) : '';
+  if (tpElGlobal) tpElGlobal.value = (initValTopP !== null && initValTopP !== '') ? String(initValTopP) : '';
+
+  // 更新 status text
+  const statusSpan = rowEl.querySelector('.odf-status-text');
+  if (statusSpan) {
+    statusSpan.textContent = matchedParams ? `(将保存到 <code>${baseName}</code>)` : '(将创建 <code>' + baseName + '</code> 记录)';
   }
 }
 
 async function saveOllamaDefaults() {
+  // v1.1.13: 先同步当前输入框的值到 ollamaFallbackOverride
+  const curNc = document.getElementById('odf-num-ctx-current');
+  const curTm = document.getElementById('odf-temp-current');
+  const curTp = document.getElementById('odf-top-p-current');
+  if (curNc) ollamaFallbackOverride.num_ctx = parseInt(curNc.value) || null;
+  if (curTm) ollamaFallbackOverride.temperature = parseFloat(curTm.value) || null;
+  if (curTp) ollamaFallbackOverride.top_p = parseFloat(curTp.value) || null;
+
   const btn = document.getElementById('btn-save-ollama-defaults');
   btn.disabled = true;
   btn.textContent = '⏳ 保存中...';
@@ -4149,18 +4351,33 @@ async function saveOllamaDefaults() {
       temperature: parseFloat(document.getElementById('ollama-defaults-fallback-temp').value) || null,
       top_p: parseFloat(document.getElementById('ollama-defaults-fallback-top-p').value) || null,
     };
-    // models: 保留所有, 当前行从输入框读
+    // v1.1.17: 不重置 ollamaFallbackOverride (saveOllamaDefaults 里不该覆盖用户输入)
+    // models: 保留所有已有记录
     const models = {};
     for (const k of Object.keys(ollamaDefaultsCache.models || {})) {
       models[k] = ollamaDefaultsCache.models[k];
     }
+    // 当前模型行: 优先用 id, 其次用 class
     const row = document.querySelector('.ollama-defaults-row');
     if (row) {
       const name = row.getAttribute('data-name');
+      let ncVal, tmVal, tpVal;
+      const iNc = row.querySelector('#odf-num-ctx-current');
+      const iTm = row.querySelector('#odf-temp-current');
+      const iTp = row.querySelector('#odf-top-p-current');
+      if (iNc) {
+        ncVal = parseInt(iNc.value);
+        tmVal = parseFloat(iTm.value);
+        tpVal = parseFloat(iTp.value);
+      } else {
+        ncVal = parseInt(row.querySelector('.odf-num-ctx')?.value);
+        tmVal = parseFloat(row.querySelector('.odf-temp')?.value);
+        tpVal = parseFloat(row.querySelector('.odf-top-p')?.value);
+      }
       models[name] = {
-        num_ctx: parseInt(row.querySelector('.odf-num-ctx').value) || null,
-        temperature: parseFloat(row.querySelector('.odf-temp').value) || null,
-        top_p: parseFloat(row.querySelector('.odf-top-p').value) || null,
+        num_ctx: isNaN(ncVal) ? null : ncVal,
+        temperature: isNaN(tmVal) ? null : tmVal,
+        top_p: isNaN(tpVal) ? null : tpVal,
       };
     }
     const resp = await fetchJSON('/api/ollama_defaults', 'POST', {
@@ -4450,6 +4667,7 @@ async function confirmInitModel() {
 }
 
 </script>
+<script>console.log('[v1.1.17-hotfix] JS loaded at', new Date().toISOString());</script>
 </body>
 </html>'''
 

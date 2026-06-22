@@ -202,7 +202,8 @@ echo "🚀 启动参数：ctx=$CTX_SIZE, parallel=$PARALLEL, ngl=$NG_LAYERS, fla
   --reasoning-format deepseek \
   --cache-type-k q8_0 \
   --cache-type-v q8_0 \
-  $dflash_args \
+  $dflash_args
+  # $turbo_args  # v1.1.11 暂时禁用 (与 HauhauCS uncensored 等 K_P 量化模型不兼容, 触发 /// 死循环)
   $mmproj_args
   ${KV_OVERRIDE:+$KV_OVERRIDE}
 

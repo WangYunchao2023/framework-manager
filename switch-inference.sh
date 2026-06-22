@@ -45,13 +45,14 @@ MODEL_FILE="/tmp/beella_model"
 
 MODELS=(
   "qwen3.6-q3|Qwen3.6-35B Q3_K_M|/home/wangyc/models/qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf|16 GB|~17 GB"
+  "qwen3.6-uncensored|Qwen3.6-35B Uncensored HauhauCS Q3_K_P|/home/wangyc/models/qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q3_K_P.gguf|17.7 GB|~19 GB"
   "qwen3-14b|Qwen3-14B Q4_K_M|/home/wangyc/models/qwen3-14b/qwen3-14b-q4.gguf|9.3 GB|~10 GB"
   "gemma-4-26b|Gemma4 26B A4B|/data/ollama/models/blobs/$(ls /data/ollama/models/blobs/sha256-6159deaf76075* 2>/dev/null | head -1 | xargs basename)|16 GB|~17 GB"
   "qwen3-vl|Qwen3-VL 8B|/home/wangyc/models/qwen3-vl/qwen3-vl-8b.gguf|5.9 GB|~8 GB"
 )
 
 # beellama 可切换的模型
-BEELLAMA_MODELS=("qwen3.6-q3" "qwen3-vl" "gemma-4-26b" "qwen3-14b")
+BEELLAMA_MODELS=("qwen3.6-q3" "qwen3.6-uncensored" "qwen3-vl" "gemma-4-26b" "qwen3-14b")
 
 # v1.0.3: ollama 端 per-model tag (num_ctx 已固化在 Modelfile)
 # 切换 ollama 端模型时优先用这些 tag (如: ollama run qwen3.6-q3:ctx128k)

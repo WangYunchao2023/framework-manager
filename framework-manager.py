@@ -2515,9 +2515,7 @@ def api_get_manifest_gen_params():
         return jsonify({"error": f"配置文件不存在: {MANIFEST_GEN_PARAMS_FILE}"}), 404
     try:
         with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
-            data = json.load(f)
-        # 仅返回有效参数 (过滤 _meta)
-        params = {k: v for k, v in data.items() if not k.startswith("_")}
+            params = json.load(f)
         return jsonify({
             "params": params,
             "file_path": MANIFEST_GEN_PARAMS_FILE,
@@ -2553,26 +2551,11 @@ def api_set_manifest_gen_params():
     # num_ctx 范围
     if not (512 <= out["num_ctx"] <= 1048576):
         return jsonify({"error": f"num_ctx 越界 (512-1048576): {out['num_ctx']}"}), 400
-    # 写文件 (保留 _meta)
+    # 写文件 (只存 5 个参数, 不加 _meta)
     try:
         os.makedirs(PROJECT_CONFIG_DIR, exist_ok=True)
-        meta = {}
-        if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
-            try:
-                with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
-                    old = json.load(f)
-                meta = old.get("_meta", {})
-            except Exception:
-                pass
-        meta.update({
-            "description": "手动下载的模型放到指定位置后, 自动扫描加载到 ollama 框架下进行管理前, 需生成相应的 manifests, 自动生成时调用这里设置的相关参数",
-            "推荐值": "num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0",
-            "version": "1.0.0",
-        })
-        payload = dict(out)
-        payload["_meta"] = meta
         with open(MANIFEST_GEN_PARAMS_FILE, "w") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+            json.dump(out, f, indent=2, ensure_ascii=False)
     except Exception as e:
         return jsonify({"error": f"写文件失败: {e}"}), 500
     audit_log("保存 新模型注册参数", f"params={out}", "ok")

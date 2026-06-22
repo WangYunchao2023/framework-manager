@@ -2557,7 +2557,7 @@ def api_set_manifest_gen_params():
             except Exception:
                 pass
         meta.update({
-            "description": "用于 ingest_gguf 生成新 manifest 时的默认参数",
+            "description": "手动下载的模型放到指定位置后, 自动扫描加载到 ollama 框架下进行管理前, 需生成相应的 manifests, 自动生成时调用这里设置的相关参数",
             "推荐值": "num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0",
             "version": "1.0.0",
         })
@@ -3316,7 +3316,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="card" id="manifest-gen-params-card" style="display:none;">
 <h2>📋 Manifest 生成参数</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-  <b>用于 ingest_gguf 生成新 manifest 时的默认参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中 ⭐ 为推荐值
+  <b>手动下载的模型放到指定位置后, 自动扫描加载到 ollama 框架下进行管理前, 需生成相应的 manifests, 自动生成时调用这里设置的相关参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中 ⭐ 为推荐值
 </p>
 <div class="form-row">
   <div class="form-group">

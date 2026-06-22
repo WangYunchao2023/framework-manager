@@ -3428,11 +3428,11 @@ loras: /home/wangyc/my_loras"></textarea>
 </div>
 <div class="card">
 <h2>🎯 模型 & 参数</h2>
-<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.6;">
-  <div>📂 <b style="color:var(--accent);">beellama</b>: 任意目录 <code>*.gguf</code>（wrapper 默认扫 <code>~/models/</code>）</div>
-  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>/data/ollama/models/</code>（override.conf 设定；权重存 <code>blobs/</code>，索引存 <code>manifests/</code>）</div>
-  <div>📂 <b style="color:var(--accent);">comfyui</b>: <code>extra_model_paths.yaml</code> 配置的目录（默认 <code>$ComfyUI/models/</code>）</div>
-  <div>💡 <b>添加新模型</b>：GGUF 放到 <code>/data/ollama/models/blobs/</code>（或 <code>blobs/sha256-xxx</code> 命名），点 <b>➕ 添加/移除模型进列表</b> 自动注册（秒级，不解析权重）</div>
+<div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.7;">
+  <div>📂 <b>beellama</b>: <code>~/models/</code>（也可 <code>find ~/models /data -name "*.gguf"</code> 查看全部）</div>
+  <div>📂 <b>ollama</b>: <code>/data/ollama/models/</code>（权重 <code>blobs/</code>，索引 <code>manifests/</code>）</div>
+  <div>📂 <b>comfyui</b>: <code>/data/ComfyUI/models/</code>（<code>checkpoints/loras/diffusion_models/</code> 等）</div>
+  <div>💡 <b>添加 ollama 模型</b>：GGUF 放到 <code>blobs/</code> → 点 ➕ 添加/移除模型进列表 → 自动注册</div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>

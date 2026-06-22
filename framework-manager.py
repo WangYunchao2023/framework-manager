@@ -4,9 +4,18 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.15
+版本：1.1.16
 
 更新日志:
+- v1.1.16: 「⚙️ Ollama 全局参数」块简化为只露 GPU_LAYERS
+  * 重命名: 「⚙️ Ollama 全局参数」→ 「🎛️ Ollama 进程参数」(明确是进程 env 层, 不是模型层)
+  - 删除 UI 输入框: KEEP_ALIVE / NUM_PARALLEL / BATCH_SIZE / FLASH_ATTENTION (4 个)
+    - 原因: 已在 override.conf 锁为最优值, per-model 也不能管, 99% 用户不会动
+  * 保留: GPU_LAYERS (需要依显卡设置)
+  + 文本提示: 常见显卡推荐值表 (2080Ti=35 / 3090=99 / 4090=99 / A100=99 / CPU=0)
+  * API GET: 返回全部 5 字段 (其他 4 字段从 _OLLAMA_DEFAULT_GLOBAL 硬编码补齐)
+  * API POST: 只接 gpu_layers, 写 override.conf 时用 _OLLAMA_DEFAULT_GLOBAL 补齐其他 4 字段
+  * 不动: beellama / comfyui / 现有 6 个模型 / 任何 Modelfile / auto_register_gguf
 - v1.1.15: 「➕ 添加/移除模型进列表」零配置注册 GGUF
   + 新增 /api/auto_register_gguf: 扫描 /data/ollama/models/blobs/, 对未被 manifest 引用的 GGUF 自动创建
     params blob (num_ctx=131072) + config blob + manifest, 无需走 ollama create (秒级, 不解析权重)
@@ -2228,6 +2237,7 @@ def api_set_comfyui_extra_paths():
 def api_get_ollama_global_params():
     """获取 Ollama 全局参数
     优先从 framework-manager.json 读, 缺失字段从 override.conf 读
+    v1.1.16: 始终返回全部 5 字段 (其他 4 字段会从 _OLLAMA_DEFAULT_GLOBAL 补齐, 因为 cfg_global 现在只存 gpu_layers)
     """
     config = load_config()
     saved = config.get("framework_params", {}).get("ollama", {}).get("global", {})
@@ -2241,8 +2251,9 @@ def api_get_ollama_global_params():
 @app.route("/api/ollama_global_params", methods=["POST"])
 def api_set_ollama_global_params():
     """保存 Ollama 全局参数 → 写 override.conf → daemon-reload → restart
-    body: {keep_alive, num_parallel, batch_size, gpu_layers, flash_attention}
-    字段可省略 (省略 = 保留现状); 显式传 null/空 = 删除该 Environment
+    v1.1.16: UI 只提交 GPU_LAYERS, 其他 4 字段 (keep_alive/num_parallel/batch_size/flash_attention)
+    使用 _OLLAMA_DEFAULT_GLOBAL 硬编码最优值补齐, 不接受前端覆盖
+    body: {gpu_layers: 35} (可省略; null=不设)
     """
     if current_framework != "ollama":
         return jsonify({"error": "当前不是 Ollama 框架 (参数可存但不能 restart)"}), 400
@@ -2271,12 +2282,16 @@ def api_set_ollama_global_params():
         if k in data:
             cfg_global[k] = data[k] if data[k] != "" else None
     save_config(config)
-    # 2) 写 override.conf (从 runtime 读现有值 + cfg_global 覆盖)
+    # 2) 写 override.conf (v1.1.16: cfg_global 可能不含其他 4 字段, 用 _OLLAMA_DEFAULT_GLOBAL 补齐)
+    #    override.conf 必须保持全部 5 字段, 否则服务启动时 env 缺失
     runtime = _read_ollama_override_conf()
     merged = runtime.copy()
     for k in valid_keys:
-        if k in cfg_global:
+        if k in cfg_global and cfg_global[k] is not None:
             merged[k] = cfg_global[k]
+        elif k not in merged:
+            # cfg_global 没有, runtime 也没有, 用硬编码最优值
+            merged[k] = _OLLAMA_DEFAULT_GLOBAL.get(k)
     if not _write_ollama_override_conf(merged):
         return jsonify({"error": "写 override.conf 失败"}), 500
     # 3) daemon-reload + restart
@@ -3139,42 +3154,29 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>turbo3</b>: 速度快/功耗低 (~100W)，但长对话可能乱码 · <b>f16</b>: 稳定不乱码/功耗高 (~200W) · 修改后需重启 beellama
 </p>
 </div>
-<!-- ⚙️ Ollama 全局参数 (v1.1.8-patch2 新增, 切换到 ollama 时显示) -->
+<!-- 🎛️ Ollama 进程参数 (v1.1.16 简化, 仅留 GPU_LAYERS) -->
 <div class="card" id="ollama-params-card" style="display:none;">
-<h2>⚙️ Ollama 全局参数</h2>
+<h2>🎛️ Ollama 进程参数</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-  优先级：<b>模型专属参数</b> > <b>全局参数</b> > Ollama 内置默认 · 修改后需重启 Ollama 服务
+  KEEP_ALIVE / NUM_PARALLEL / BATCH_SIZE / FLASH_ATTENTION 已锁定为最优值，无需调整。<br>
+  仅 <b>GPU_LAYERS</b>（多少层 offload 到 GPU）依显卡而异，需要手动设。修改后重启 Ollama。
 </p>
 <div class="form-row">
   <div class="form-group">
-    <label>KEEP_ALIVE (空闲后卸载时间, -1=永远驻留)</label>
-    <input type="text" id="ollama-keep-alive" placeholder="10m" style="min-width:100px;">
-  </div>
-  <div class="form-group">
-    <label>NUM_PARALLEL (并发数, 1=单用户)</label>
-    <input type="number" id="ollama-num-parallel" placeholder="1" min="1" max="16" style="min-width:80px;">
-  </div>
-  <div class="form-group">
-    <label>BATCH_SIZE (可选, 留空=不设)</label>
-    <input type="number" id="ollama-batch-size" placeholder="512" min="1" style="min-width:80px;">
-  </div>
-  <div class="form-group">
-    <label>GPU_LAYERS (可选, 留空=不限)</label>
-    <input type="number" id="ollama-gpu-layers" placeholder="35" min="0" max="200" style="min-width:80px;">
-  </div>
-  <div class="form-group">
-    <label>FLASH_ATTENTION (0=关, 1=开)</label>
-    <select id="ollama-flash-attention" style="min-width:80px;">
-      <option value="0">0 (关)</option>
-      <option value="1">1 (开)</option>
-    </select>
+    <label>GPU_LAYERS（0=全 CPU, 空=不限/全 GPU, 35=~22.5GB 卡上常用值）</label>
+    <input type="number" id="ollama-gpu-layers" placeholder="留空=不限" min="0" max="999" style="min-width:120px;">
   </div>
   <div class="form-group" style="justify-content:flex-end;">
     <button class="btn success" onclick="saveOllamaGlobalParams()" id="btn-save-ollama-global">💾 保存并重启 Ollama</button>
   </div>
 </div>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
-💡 <b>KEEP_ALIVE</b>: 10m 配合 9528 空闲回退 (默认 300s) · <b>NUM_PARALLEL=1</b>: 1 并发 + per-model num_ctx 适合 22.5GB 卡 · 修改后重启 Ollama
+💡 <b>常见显卡推荐 GPU_LAYERS</b>：<br>
+&nbsp;&nbsp;· 2080Ti / 22GB：<b>35</b>（推荐，避免 128K 上下文 OOM）<br>
+&nbsp;&nbsp;· 3090 / 24GB：<b>99</b>（35B MoE Q3 可全 GPU）<br>
+&nbsp;&nbsp;· 4090 / 24GB：<b>99</b><br>
+&nbsp;&nbsp;· A100 40-80GB / H100：<b>99</b>（大模型全 GPU）<br>
+&nbsp;&nbsp;· 无 GPU / CPU only：<b>0</b>
 </p>
 </div>
 <!-- 📦 Ollama 模型专属参数 (v1.1.8-patch2 新增, 加载 ollama 模型后显示) -->
@@ -4284,17 +4286,14 @@ async function saveComfyuiPaths() {
   }
 }
 
-// ⚙️ Ollama 全局参数 (v1.1.8-patch2)
+// 🎛️ Ollama 进程参数 (v1.1.16 简化, 只动 GPU_LAYERS)
 async function loadOllamaGlobalParams() {
   try {
     const data = await fetchJSON('/api/ollama_global_params');
-    document.getElementById('ollama-keep-alive').value = data.keep_alive || '';
-    document.getElementById('ollama-num-parallel').value = data.num_parallel ?? '';
-    document.getElementById('ollama-batch-size').value = data.batch_size ?? '';
+    // v1.1.16: 只显示 GPU_LAYERS, 其他 4 个字段已锁定无需 UI 调整
     document.getElementById('ollama-gpu-layers').value = data.gpu_layers ?? '';
-    document.getElementById('ollama-flash-attention').value = String(data.flash_attention ?? 0);
   } catch (e) {
-    console.error('加载 Ollama 全局参数失败:', e);
+    console.error('加载 Ollama 进程参数失败:', e);
   }
 }
 
@@ -4303,16 +4302,13 @@ async function saveOllamaGlobalParams() {
   btn.disabled = true;
   btn.textContent = '⏳ 重启中...';
   try {
+    // v1.1.16: 只发送 GPU_LAYERS, 后端会用硬编码最优值补齐其他 4 个字段
     const payload = {
-      keep_alive: document.getElementById('ollama-keep-alive').value || null,
-      num_parallel: document.getElementById('ollama-num-parallel').value || null,
-      batch_size: document.getElementById('ollama-batch-size').value || null,
       gpu_layers: document.getElementById('ollama-gpu-layers').value || null,
-      flash_attention: document.getElementById('ollama-flash-attention').value,
     };
     const resp = await fetchJSON('/api/ollama_global_params', 'POST', payload);
     if (resp.status === 'ok') {
-      showToast('✅ ' + (resp.message || 'Ollama 全局参数已保存并重启'), 'success', 5000);
+      showToast('✅ ' + (resp.message || 'Ollama 进程参数已保存并重启'), 'success', 5000);
       setTimeout(refresh, 3000);
     } else {
       showToast('保存失败：' + (resp.error || '未知错误'), 'error');

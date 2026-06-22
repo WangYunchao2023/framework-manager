@@ -297,6 +297,14 @@ PROJECT_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "c
 MANIFEST_GEN_PARAMS_FILE = os.path.join(PROJECT_CONFIG_DIR, "ollama_manifest_generate_parameter.json")
 # manifest 生成参数合法字段 (顺序 = UI 顺序)
 _MANIFEST_GEN_PARAM_FIELDS = ["num_ctx", "temperature", "top_p", "top_k", "repeat_penalty"]
+# v1.1.18: ingest_gguf 兑底参数 (「📋 新模型注册参数」 文件不存在时使用, 仅 ingest 路径)
+_MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST = {
+    "num_ctx": 131072,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 20,
+    "repeat_penalty": 1.0,
+}
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
@@ -2571,6 +2579,25 @@ def api_set_manifest_gen_params():
     return jsonify({"status": "ok", "params": out, "file_path": MANIFEST_GEN_PARAMS_FILE})
 
 
+# ── v1.1.18: 自动注册用户下载的 GGUF ─────────
+@app.route("/api/ingest_gguf", methods=["POST"])
+def api_ingest_gguf():
+    """v1.1.18: 「📥 自动注册下载的模型」 按钮
+
+    扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf 文件
+    (用户下载/放置的), 依次:
+    1. 计算 sha256 (增量, 避免 OOM)
+    2. 硬链接为 'sha256-{hash}' 命名 (同 fs)
+    3. 删原文件 (硬链接保留)
+    4. 解析 GGUF header (general.name + context_length)
+    5. 读 「📋 新模型注册参数」, num_ctx = min(新参数, gguf.context_length)
+    6. 生成 params blob + config blob + manifest
+    7. tag 格式: '{general.name}-ctx{N}k'
+    """
+    result = _ingest_gguf()
+    return jsonify(result)
+
+
 @app.route("/api/restore_ollama_default_model_params", methods=["POST"])
 def api_restore_ollama_default_model_params():
     """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
@@ -2857,6 +2884,280 @@ def api_scan_for_addition():
         "visible": visible,
         "hidden": hidden
     })
+
+
+# ── v1.1.18: 解析 GGUF header (用于 ingest_gguf 提取 general.name 和 context_length) ─────
+def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
+    """解析 GGUF v3 header, 提取 general.name 和 context_length
+
+    GGUF v3 格式:
+    - magic (4B) = "GGUF"
+    - version (4B) = 3
+    - tensor_count (8B)
+    - kv_count (8B)
+    - KV pairs: key_len(8B) + key (UTF-8) + value_type(4B) + value_data
+
+    需要的字段:
+    - general.name (GGUF_STRING=8): model name
+    - <arch>.context_length (GGUF_UINT32=4): native context length
+      (qwen2arch=llama → llama.context_length, qwen2 → qwen2.context_length 等)
+
+    只读前 max_bytes 字节 (默认 10MB), 避开多 GB GGUF 文件.
+    返回: {name: str|None, context_length: int|None} 或 失败时 {}
+    """
+    try:
+        with open(gguf_path, "rb") as f:
+            head = f.read(max_bytes)
+        if len(head) < 24:
+            return {}
+        # magic (4) + version (4) + tensor_count (8) + kv_count (8) = 24
+        import struct
+        magic = head[0:4]
+        if magic != b"GGUF":
+            return {}
+        # version = struct.unpack("<I", head[4:8])[0]  # v1.1.18 不严格检查, 3 是主流
+        # tensor_count = struct.unpack("<Q", head[8:16])[0]
+        kv_count = struct.unpack("<Q", head[16:24])[0]
+        if kv_count > 10000:  # 防异常文件
+            return {}
+
+        # GGUF value types
+        GGUF_STRING = 8
+        GGUF_UINT32 = 4
+        GGUF_INT32 = 5
+        GGUF_UINT64 = 10
+        GGUF_INT64 = 11
+        GGUF_FLOAT32 = 6
+        GGUF_ARRAY = 9
+
+        result = {"name": None, "context_length": None}
+        offset = 24
+        for _ in range(int(kv_count)):
+            if offset + 8 > len(head):
+                break
+            key_len = struct.unpack("<Q", head[offset:offset+8])[0]
+            offset += 8
+            if offset + key_len > len(head):
+                break
+            key = head[offset:offset+key_len].decode("utf-8", errors="ignore")
+            offset += key_len
+            if offset + 4 > len(head):
+                break
+            value_type = struct.unpack("<I", head[offset:offset+4])[0]
+            offset += 4
+
+            # 提取 name (general.name) 和 context_length
+            if key == "general.name" and value_type == GGUF_STRING:
+                if offset + 8 > len(head):
+                    break
+                str_len = struct.unpack("<Q", head[offset:offset+8])[0]
+                offset += 8
+                if offset + str_len > len(head):
+                    break
+                result["name"] = head[offset:offset+str_len].decode("utf-8", errors="ignore")
+                offset += str_len
+            elif key.endswith(".context_length") and value_type in (GGUF_UINT32, GGUF_INT32):
+                if offset + 4 > len(head):
+                    break
+                result["context_length"] = struct.unpack("<I", head[offset:offset+4])[0]
+                offset += 4
+            elif key.endswith(".context_length") and value_type in (GGUF_UINT64, GGUF_INT64):
+                if offset + 8 > len(head):
+                    break
+                result["context_length"] = struct.unpack("<Q", head[offset:offset+8])[0]
+                offset += 8
+            elif value_type == GGUF_STRING:
+                if offset + 8 > len(head):
+                    break
+                str_len = struct.unpack("<Q", head[offset:offset+8])[0]
+                offset += 8 + str_len
+            elif value_type in (GGUF_UINT32, GGUF_INT32, GGUF_FLOAT32):
+                offset += 4
+            elif value_type in (GGUF_UINT64, GGUF_INT64):
+                offset += 8
+            elif value_type == GGUF_ARRAY:
+                if offset + 12 > len(head):
+                    break
+                arr_type = struct.unpack("<I", head[offset:offset+4])[0]
+                arr_len = struct.unpack("<Q", head[offset+4:offset+12])[0]
+                offset += 12
+                if arr_type == GGUF_STRING:
+                    for _ in range(min(int(arr_len), 100)):  # 限 100 防跳出
+                        if offset + 8 > len(head):
+                            break
+                        sl = struct.unpack("<Q", head[offset:offset+8])[0]
+                        offset += 8 + sl
+                elif arr_type in (GGUF_UINT32, GGUF_INT32, GGUF_FLOAT32):
+                    offset += 4 * arr_len
+                elif arr_type in (GGUF_UINT64, GGUF_INT64):
+                    offset += 8 * arr_len
+                else:
+                    break  # 不支持的 array type, 跳出
+            else:
+                break  # 未知 type, 跳出
+        return result
+    except Exception as e:
+        audit_log("GGUF 解析失败", f"path={gguf_path}, error={e}", "error")
+        return {}
+
+
+def _ingest_gguf():
+    """v1.1.18: 扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf 文件 (用户下载的)
+
+    流程:
+    1. 扫描 blobs/ 中不以 'sha256-' 开头的 .gguf 文件
+    2. 计算 sha256 (增量, 避免 OOM)
+    3. 硬链接为 'sha256-{hash}' 命名 (同 fs, 不复制)
+    4. 删原文件 (硬链接保留, 原文件释放)
+    5. 解析 GGUF header 得 general.name 和 context_length
+    6. 读 「📋 新模型注册参数」 文件, num_ctx = min(新参数, gguf.context_length)
+    7. 写 params blob + config blob + manifest, tag 格式 '{name}-ctx{N}k'
+
+    返回: {scanned: int, registered: [...], skipped: [...], errors: [...]}
+    """
+    import json as _json
+    blobs_dir = Path(OLLAMA_MODELS_DIR) / "blobs"
+    manifests_dir = Path(OLLAMA_MODELS_DIR) / "manifests" / "registry.ollama.ai" / "library"
+    if not blobs_dir.exists():
+        return {"scanned": 0, "registered": [], "skipped": [], "errors": [f"blobs 目录不存在: {blobs_dir}"]}
+
+    # 读 「📋 新模型注册参数」 文件
+    manifest_params = _MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST  # 兑底 (若文件不存在)
+    if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
+        try:
+            with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
+                loaded = _json.load(f)
+            for k in _MANIFEST_GEN_PARAM_FIELDS:
+                if k in loaded:
+                    manifest_params[k] = loaded[k]
+        except Exception as e:
+            return {"scanned": 0, "registered": [], "skipped": [], "errors": [f"读新模型注册参数文件失败: {e}"]}
+
+    user_num_ctx = int(manifest_params["num_ctx"])
+
+    # 1. 扫描用户下载的 .gguf (任意命名, 不是 sha256-)
+    user_files = []
+    for f in blobs_dir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name.startswith("sha256-"):
+            continue  # 跳过已 sha 命名的
+        if not f.name.lower().endswith((".gguf", ".bin")):  # .bin 也是 GGUF 常见后缀
+            continue
+        user_files.append(f)
+    if not user_files:
+        return {"scanned": 0, "registered": [], "skipped": [], "errors": [], "params": manifest_params}
+
+    # 2. 为每个用户文件计算 sha + 硬链接 + 解析 + 生成 manifest
+    registered = []
+    skipped = []
+    errors = []
+    for src in user_files:
+        src_path = str(src)
+        src_name = src.name
+        try:
+            # 2a. 计算 sha256 (增量)
+            sha_hasher = hashlib.sha256()
+            with open(src, "rb") as f:
+                while True:
+                    chunk = f.read(8 * 1024 * 1024)  # 8MB chunks
+                    if not chunk:
+                        break
+                    sha_hasher.update(chunk)
+            sha = sha_hasher.hexdigest()
+            sha_blob = blobs_dir / f"sha256-{sha}"
+
+            # 2b. 硬链接 (如果 sha 命名已存在则跳过)
+            if not sha_blob.exists():
+                try:
+                    os.link(src_path, str(sha_blob))
+                except OSError as e:
+                    # 跨 fs 或其他原因, 退到 copy2
+                    import shutil
+                    shutil.copy2(src_path, str(sha_blob))
+            size = sha_blob.stat().st_size
+
+            # 2c. 删原文件 (硬链接保留, 源释放)
+            try:
+                os.unlink(src_path)
+            except OSError:
+                pass  # 即使删失败, manifest 仍可创建
+
+            # 2d. 解析 GGUF header
+            info = _parse_gguf_header(str(sha_blob))
+            gguf_name = info.get("name") or f"gguf-{sha[:8]}"
+            gguf_ctx = info.get("context_length")
+            # num_ctx = min(user设置, gguf 原生 ctx)
+            if gguf_ctx and 512 <= gguf_ctx <= 1048576:
+                num_ctx = min(user_num_ctx, gguf_ctx)
+            else:
+                num_ctx = user_num_ctx
+            ctx_k = f"ctx{num_ctx // 1024}k" if num_ctx % 1024 == 0 else f"ctx{num_ctx}"
+
+            # 2e. 写 params blob (只写 num_ctx)
+            params_data = _json.dumps({"num_ctx": num_ctx}).encode()
+            params_sha = hashlib.sha256(params_data).hexdigest()
+            params_blob = blobs_dir / f"sha256-{params_sha}"
+            if not params_blob.exists():
+                params_blob.write_bytes(params_data)
+
+            # 2f. 写 config blob
+            config_data = _json.dumps({
+                "model_sha": sha,
+                "model_size": size,
+                "num_ctx": num_ctx,
+                "gguf_name": gguf_name,
+                "gguf_context_length": gguf_ctx,
+            }).encode()
+            config_sha = hashlib.sha256(config_data).hexdigest()
+            config_blob = blobs_dir / f"sha256-{config_sha}"
+            if not config_blob.exists():
+                config_blob.write_bytes(config_data)
+
+            # 2g. 检查 manifest 是否已存在 (幂等)
+            model_dir = manifests_dir / gguf_name
+            tag_file = model_dir / ctx_k
+            if tag_file.exists():
+                skipped.append(f"{gguf_name}:{ctx_k} (已存在)")
+                continue
+
+            # 2h. 写 manifest
+            model_dir.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "config": {
+                    "mediaType": "application/vnd.docker.container.image.v1+json",
+                    "digest": f"sha256:{config_sha}",
+                    "size": len(config_data),
+                },
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": f"sha256:{sha}",
+                        "size": size,
+                    },
+                    {
+                        "mediaType": "application/vnd.ollama.image.params",
+                        "digest": f"sha256:{params_sha}",
+                        "size": len(params_data),
+                    },
+                ],
+            }
+            tag_file.write_text(_json.dumps(manifest, indent=2))
+            registered.append(f"{gguf_name}:{ctx_k}")
+            audit_log("ingest GGUF", f"name={gguf_name}:{ctx_k}, size={size}, sha={sha[:12]}, gguf_ctx={gguf_ctx}", "ok")
+        except Exception as e:
+            errors.append(f"{src_name}: {e}")
+            audit_log("ingest GGUF 失败", f"file={src_name}, error={e}", "error")
+
+    return {
+        "scanned": len(user_files),
+        "registered": registered,
+        "skipped": skipped,
+        "errors": errors,
+        "params_used": manifest_params,
+    }
 
 
 def _auto_register_gguf_for_ollama():
@@ -3377,6 +3678,22 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>什么时候生效</b>：仅「导入 GGUF」(ingest_gguf) 时使用。已建好的 manifest 不会受影响，要改需去「📦 Ollama 模型专属参数」或「🎯 Ollama 默认值」块。
 </p>
 </div>
+<!-- 📥 自动注册下载的模型 (v1.1.18 新增, 切到 ollama 时显示) -->
+<div class="card" id="ingest-gguf-card" style="display:none;">
+<h2>📥 自动注册下载的模型</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 自动计算 sha256 · 硬链接为 <code>sha256-xxx</code> · 删除原文件 · 解析 GGUF header · 生成 manifest · 使用「📋 新模型注册参数」中的设置
+</p>
+<div class="form-row">
+  <div class="form-group" style="flex:1;">
+    <button class="btn primary" onclick="ingestGguf()" id="btn-ingest-gguf" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并自动注册 blobs/ 中未注册的 GGUF</button>
+  </div>
+</div>
+<div id="ingest-gguf-result" style="margin-top:10px;font-size:0.82rem;color:var(--text-dim);"></div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>使用流程</b>：从 HuggingFace 等下载的 .gguf 文件 (任意名称) 放到 <code>/data/ollama/models/blobs/</code> → 点击按钮 → 自动生成 manifest → 在「模型 & 参数」中可见
+</p>
+</div>
 <!-- 🎯 Ollama 默认值 (v1.1.8-patch2 新增, 切到 ollama 时显示) -->
 <div class="card" id="ollama-defaults-card" style="display:none;">
 <h2>🎯 Ollama 默认值 <span id="ollama-defaults-current-badge" style="font-size:0.78rem;color:var(--text-dim);font-weight:normal;">(未加载模型)</span></h2>
@@ -3756,6 +4073,7 @@ async function refresh() {
     var ollamaModelParamsCard = document.getElementById('ollama-model-params-card');
     var ollamaDefaultsCard = document.getElementById('ollama-defaults-card');
     var manifestGenParamsCard = document.getElementById('manifest-gen-params-card');  // v1.1.17
+    var ingestGgufCard = document.getElementById('ingest-gguf-card');  // v1.1.18
     if (ollamaParamsCard) {
       if (fw === 'ollama') {
         ollamaParamsCard.style.display = 'block';
@@ -3764,12 +4082,14 @@ async function refresh() {
           manifestGenParamsCard.style.display = 'block';
           loadManifestGenParams();
         }
+        if (ingestGgufCard) ingestGgufCard.style.display = 'block';
         loadOllamaGlobalParams();
         loadOllamaDefaults();
       } else {
         ollamaParamsCard.style.display = 'none';
         ollamaDefaultsCard.style.display = 'none';
         if (manifestGenParamsCard) manifestGenParamsCard.style.display = 'none';
+        if (ingestGgufCard) ingestGgufCard.style.display = 'none';
       }
     }
     if (ollamaModelParamsCard) {
@@ -4610,6 +4930,52 @@ async function saveManifestGenParams() {
   } finally {
     btn.disabled = false;
     btn.textContent = '💾 保存';
+  }
+}
+
+// 📥 自动注册下载的模型 (v1.1.18)
+async function ingestGguf() {
+  const btn = document.getElementById('btn-ingest-gguf');
+  const resultDiv = document.getElementById('ingest-gguf-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ 扫描中...';
+  resultDiv.innerHTML = '正在扫描 <code>/data/ollama/models/blobs/</code>...';
+  try {
+    showLoadStatus(true);
+    updateLoadStatusUI({ status: 'loading', message: '扫描并注册用户下载的 GGUF...', progress: 10, elapsed_seconds: 0 });
+    const resp = await fetchJSON('/api/ingest_gguf', 'POST', {});
+    updateLoadStatusUI({ status: 'loading', message: '注册中...', progress: 60, elapsed_seconds: 1 });
+    const r = resp;
+    let html = `<b>扫描到 ${r.scanned} 个未注册 .gguf</b><br>`;
+    if (r.registered && r.registered.length > 0) {
+      html += '✅ <b>已注册</b>：' + r.registered.map(n => `<code>${n}</code>`).join(', ') + '<br>';
+    }
+    if (r.skipped && r.skipped.length > 0) {
+      html += '⏭️ <b>已跳过</b>：' + r.skipped.map(n => `<code>${n}</code>`).join(', ') + '<br>';
+    }
+    if (r.errors && r.errors.length > 0) {
+      html += '❌ <b>错误</b>：' + r.errors.map(e => `<code>${e}</code>`).join(', ') + '<br>';
+    }
+    if (r.params_used) {
+      html += `<br>使用参数：<code>${JSON.stringify(r.params_used)}</code>`;
+    }
+    resultDiv.innerHTML = html;
+    updateLoadStatusUI({
+      status: r.errors && r.errors.length > 0 ? 'error' : 'done',
+      message: r.errors && r.errors.length > 0 ? `⚠️ ${r.registered.length} 成功, ${r.errors.length} 失败` : `✅ 注册 ${r.registered.length} 个模型`,
+      progress: 100,
+      elapsed_seconds: 2
+    });
+    showToast(r.registered && r.registered.length > 0 ? `✅ 已注册 ${r.registered.length} 个模型` : 'ℹ️ 扫描完成 (无新模型)', r.errors && r.errors.length > 0 ? 'warning' : 'success', 5000);
+    setTimeout(function() { showLoadStatus(false); }, 3000);
+  } catch (e) {
+    resultDiv.innerHTML = '<span style="color:#f88;">❌ 错误: ' + e.message + '</span>';
+    updateLoadStatusUI({ status: 'error', message: '❌ ' + e.message, progress: 100, elapsed_seconds: 1 });
+    showToast('扫描失败: ' + e.message, 'error');
+    setTimeout(function() { showLoadStatus(false); }, 3000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📥 扫描并自动注册 blobs/ 中未注册的 GGUF';
   }
 }
 

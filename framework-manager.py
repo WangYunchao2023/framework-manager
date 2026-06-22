@@ -7,10 +7,10 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 版本：1.1.17
 
 更新日志:
-- v1.1.17: 新增「📋 Manifest 生成参数」块
+- v1.1.17: 新增「📋 新模型注册参数」块
   + 新增独立配置文件: config/ollama_manifest_generate_parameter.json (项目内, 手动创建)
   + 新增 GET/POST /api/manifest_gen_params 端点
-  + 新增 HTML 「📋 Manifest 生成参数」块 (与 「🎯 Ollama 默认值」 独立, 不覆盖)
+  + 新增 HTML 「📋 新模型注册参数」块 (与 「🎯 Ollama 默认值」 独立, 不覆盖)
   * 5 个生成 manifest 参数: num_ctx / temperature / top_p / top_k / repeat_penalty
   * UI: input + datalist 下拉, 预设常用值 + 标记推荐值
   * 默认值: num_ctx=131072, temperature=0.7, top_p=0.95, top_k=20, repeat_penalty=1.0
@@ -292,7 +292,7 @@ OLLAMA_OVERRIDE_FILE = os.path.join(OLLAMA_OVERRIDE_DIR, "override.conf")
 OLLAMA_MODELS_DIR = "/data/ollama/models"  # 与 override.conf 中 OLLAMA_MODELS 一致
 OLLAMA_MODELFILES_DIR = os.path.join(OLLAMA_MODELS_DIR, "modelfiles")
 
-# v1.1.17: 「📋 Manifest 生成参数」 文件 (项目内, 与 ~/.openclaw/config 独立)
+# v1.1.17: 「📋 新模型注册参数」 文件 (项目内, 与 ~/.openclaw/config 独立)
 PROJECT_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MANIFEST_GEN_PARAMS_FILE = os.path.join(PROJECT_CONFIG_DIR, "ollama_manifest_generate_parameter.json")
 # manifest 生成参数合法字段 (顺序 = UI 顺序)
@@ -2497,10 +2497,10 @@ def api_set_ollama_defaults():
     return jsonify({"status": "ok"})
 
 
-# ── v1.1.17: Manifest 生成参数 (项目内独立配置, 与 ollama defaults 块独立) ─────────
+# ── v1.1.17: 新模型注册参数 (项目内独立配置, 与 ollama defaults 块独立) ─────────
 @app.route("/api/manifest_gen_params", methods=["GET"])
 def api_get_manifest_gen_params():
-    """获取「📋 Manifest 生成参数」: 读项目内 config/ollama_manifest_generate_parameter.json
+    """获取「📋 新模型注册参数」: 读项目内 config/ollama_manifest_generate_parameter.json
     文件不存在 → 报错 (调用方应保证文件已存在)
     """
     if not os.path.exists(MANIFEST_GEN_PARAMS_FILE):
@@ -2520,7 +2520,7 @@ def api_get_manifest_gen_params():
 
 @app.route("/api/manifest_gen_params", methods=["POST"])
 def api_set_manifest_gen_params():
-    """保存「📋 Manifest 生成参数」 → 写项目内 config/ollama_manifest_generate_parameter.json
+    """保存「📋 新模型注册参数」 → 写项目内 config/ollama_manifest_generate_parameter.json
     body: {num_ctx, temperature, top_p, top_k, repeat_penalty}
     """
     data = request.get_json(silent=True) or {}
@@ -2567,7 +2567,7 @@ def api_set_manifest_gen_params():
             json.dump(payload, f, indent=2, ensure_ascii=False)
     except Exception as e:
         return jsonify({"error": f"写文件失败: {e}"}), 500
-    audit_log("保存 Manifest 生成参数", f"params={out}", "ok")
+    audit_log("保存 新模型注册参数", f"params={out}", "ok")
     return jsonify({"status": "ok", "params": out, "file_path": MANIFEST_GEN_PARAMS_FILE})
 
 
@@ -3312,9 +3312,9 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 💡 <b>优先级最高</b> · 修改 <b>num_ctx</b> 会创建新 tag (如 qwen3.6-q3:ctx128k), 旧 tag 保留 · 其他字段改后 tag 名不变 · 保存后请手动 <code>ollama run 新tag</code> 加载
 </p>
 </div>
-<!-- 📋 Manifest 生成参数 (v1.1.17 新增, 切到 ollama 时显示) -->
+<!-- 📋 新模型注册参数 (v1.1.17 新增, 切到 ollama 时显示) -->
 <div class="card" id="manifest-gen-params-card" style="display:none;">
-<h2>📋 Manifest 生成参数</h2>
+<h2>📋 新模型注册参数</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
   <b>手动下载的模型放到指定位置后, 自动扫描加载到 ollama 框架下进行管理前, 需生成相应的 manifests, 自动生成时调用这里设置的相关参数</b> · 不影响现有模型 · 保存在 <code>framework-manager/config/ollama_manifest_generate_parameter.json</code> · 下拉中 ⭐ 为推荐值
 </p>
@@ -4571,7 +4571,7 @@ let ollamaDefaultsCache = { _fallback: {}, models: {} };
 let ollamaFallbackOverride = {}; // 用户手动改 fallback 时的临时值
 let ollamaUserModified = false; // 用户是否手动改过当前模型行的输入框
 
-// 📋 Manifest 生成参数 (v1.1.17, 改用 select 后 v1.1.17-patch2)
+// 📋 新模型注册参数 (v1.1.17, 改用 select 后 v1.1.17-patch2)
 async function loadManifestGenParams() {
   try {
     const data = await fetchJSON('/api/manifest_gen_params');
@@ -4583,7 +4583,7 @@ async function loadManifestGenParams() {
     if (p.top_k) document.getElementById('mgen-top-k').value = String(p.top_k);
     if (p.repeat_penalty !== undefined) document.getElementById('mgen-repeat-penalty').value = String(p.repeat_penalty);
   } catch (e) {
-    console.error('加载 Manifest 生成参数失败:', e);
+    console.error('加载 新模型注册参数 失败:', e);
   }
 }
 

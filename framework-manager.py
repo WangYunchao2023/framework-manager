@@ -4,9 +4,18 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.1.14
+版本：1.1.15
 
 更新日志:
+- v1.1.15: 「➕ 添加/移除模型进列表」零配置注册 GGUF
+  + 新增 /api/auto_register_gguf: 扫描 /data/ollama/models/blobs/, 对未被 manifest 引用的 GGUF 自动创建
+    params blob (num_ctx=131072) + config blob + manifest, 无需走 ollama create (秒级, 不解析权重)
+  * 修正「🎯 模型 & 参数」位置提示: ollama 路径 ~/.ollama/models/ → /data/ollama/models/ (与 override.conf 一致)
+  + 提示文末增加「GGUF 放到 blobs/ 后, 点 ➕ 添加/移除模型进列表 自动注册」说明
+  * JS addModelsToList: 扫描完成后检查未注册 GGUF, 弹进度遮罩调 auto_register
+  * 复用现有 load-status-area 进度遮罩组件 (无需新 UI)
+  - 影响范围: 仅 ollama 框架, 不动 beellama/comfyui
+  - 兼容性: auto_register 是新增端点, 旧客户端不受影响
 - v1.1.14: ollama 模型列表显示优化 + dedupe 隐藏不带 ctx 基础 tag
   + bge/embed 不再硬编码排除, 走 hidden 列表默认隐藏 (可见可手动启用)
   + _load_hidden() 首次启动自动把 bge/embed 加入 ollama hidden
@@ -222,7 +231,7 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
   空闲超时自动回退默认设置，操作日志审计与 Web UI 显示，队列监控
 """
 
-import os, sys, json, time, subprocess, signal, threading, logging, re
+import os, sys, json, time, hashlib, subprocess, signal, threading, logging, re
 from pathlib import Path
 from datetime import datetime
 
@@ -2745,6 +2754,136 @@ def api_scan_for_addition():
     })
 
 
+def _auto_register_gguf_for_ollama():
+    """v1.1.15: 扫描 /data/ollama/models/blobs/ 中未被 manifest 引用的 GGUF,
+    为每个自动创建 params blob (num_ctx=131072) + config blob + manifest.
+    不解析 GGUF 内容, 直接用文件 sha256 作为 model layer digest. 秒级完成.
+    返回: {"registered": [name,...], "skipped_existing": [...], "errors": [...]}
+    """
+    import json as _json
+    blobs_dir = Path(OLLAMA_MODELS_DIR) / "blobs"
+    manifests_dir = Path(OLLAMA_MODELS_DIR) / "manifests" / "registry.ollama.ai" / "library"
+    if not blobs_dir.exists():
+        return {"registered": [], "skipped_existing": [], "errors": [f"blobs 目录不存在: {blobs_dir}"]}
+
+    # 1. 收集所有 manifest 已引用的 sha256
+    referenced = set()
+    if manifests_dir.exists():
+        for mf in manifests_dir.rglob("*"):
+            if not mf.is_file():
+                continue
+            try:
+                d = _json.loads(mf.read_text())
+                for layer in d.get("layers", []):
+                    digest = layer.get("digest", "")
+                    if digest.startswith("sha256:"):
+                        referenced.add(digest.split(":", 1)[1])
+                cfg = d.get("config", {}).get("digest", "")
+                if cfg.startswith("sha256:"):
+                    referenced.add(cfg.split(":", 1)[1])
+            except Exception:
+                continue
+
+    # 2. 扫描 blobs/, 找未被引用的 GGUF
+    candidates = []
+    for blob in blobs_dir.iterdir():
+        if not blob.is_file() or not blob.name.startswith("sha256-"):
+            continue
+        sha = blob.name.split("-", 1)[1]
+        if sha in referenced:
+            continue
+        # 通过 magic 判断是否是 GGUF (前 4 字节: GGUF)
+        try:
+            with open(blob, "rb") as f:
+                magic = f.read(4)
+            if magic != b"GGUF":
+                continue
+        except Exception:
+            continue
+        size = blob.stat().st_size
+        candidates.append((sha, size, blob.name))
+
+    # 3. 为每个候选写 manifest
+    registered = []
+    errors = []
+    for sha, size, blob_name in candidates:
+        # 生成模型名: 取 sha 前 8 位避免冲突
+        model_short = f"auto-{sha[:8]}"
+        try:
+            # 3a. 写 params blob (num_ctx=131072)
+            params_data = _json.dumps({"num_ctx": 131072}).encode()
+            params_sha = hashlib.sha256(params_data).hexdigest()
+            params_blob = blobs_dir / f"sha256-{params_sha}"
+            if not params_blob.exists():
+                params_blob.write_bytes(params_data)
+
+            # 3b. 写 config blob
+            config_data = _json.dumps({
+                "model_sha": sha,
+                "model_size": size,
+                "num_ctx": 131072,
+            }).encode()
+            config_sha = hashlib.sha256(config_data).hexdigest()
+            config_blob = blobs_dir / f"sha256-{config_sha}"
+            if not config_blob.exists():
+                config_blob.write_bytes(config_data)
+
+            # 3c. 写 manifest
+            model_dir = manifests_dir / model_short
+            model_dir.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "config": {
+                    "mediaType": "application/vnd.docker.container.image.v1+json",
+                    "digest": f"sha256:{config_sha}",
+                    "size": len(config_data),
+                },
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": f"sha256:{sha}",
+                        "size": size,
+                    },
+                    {
+                        "mediaType": "application/vnd.ollama.image.params",
+                        "digest": f"sha256:{params_sha}",
+                        "size": len(params_data),
+                    },
+                ],
+            }
+            (model_dir / "ctx128k").write_text(_json.dumps(manifest, indent=2))
+            registered.append(f"{model_short}:ctx128k")
+            audit_log("自动注册 GGUF", f"name={model_short}:ctx128k, size={size}, sha={sha[:12]}", "ok")
+        except Exception as e:
+            errors.append(f"{model_short}: {e}")
+            audit_log("自动注册 GGUF 失败", f"sha={sha[:12]}, error={e}", "error")
+
+    return {"registered": registered, "skipped_existing": [], "errors": errors}
+
+
+@app.route("/api/auto_register_gguf", methods=["POST"])
+def api_auto_register_gguf():
+    """v1.1.15: 「➕ 添加/移除模型进列表」按钮的零配置注册 GGUF
+    扫描 blobs/ 中未被 manifest 引用的 GGUF, 自动创建 manifest.
+    可选 body: {"num_ctx": 131072} (默认 131072)
+    """
+    data = request.get_json(silent=True) or {}
+    # 允许前端传入 num_ctx 覆盖, 当前后端固定 131072 但保留接口扩展性
+    num_ctx = int(data.get("num_ctx", 131072))
+    if not (1024 <= num_ctx <= 1048576):
+        return jsonify({"error": f"num_ctx 越界: {num_ctx}"}), 400
+
+    result = _auto_register_gguf_for_ollama()
+    return jsonify({
+        "status": "ok",
+        "registered": result["registered"],
+        "skipped_existing": result["skipped_existing"],
+        "errors": result["errors"],
+        "num_ctx": num_ctx,
+    })
+
+
 @app.route("/api/set_visible_models", methods=["POST"])
 def api_set_visible_models():
     """v1.1.7-patch3: 提交「➕ 添加模型进列表」模态框勾选结果
@@ -3291,8 +3430,9 @@ loras: /home/wangyc/my_loras"></textarea>
 <h2>🎯 模型 & 参数</h2>
 <div style="background:#1a2a3a;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:0.75rem;color:var(--text-dim);line-height:1.6;">
   <div>📂 <b style="color:var(--accent);">beellama</b>: 任意目录 <code>*.gguf</code>（wrapper 默认扫 <code>~/models/</code>）</div>
-  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>~/.ollama/models/</code>（默认；环境变量 <code>OLLAMA_MODELS</code> 可改）</div>
+  <div>📂 <b style="color:var(--accent);">ollama</b>: <code>/data/ollama/models/</code>（override.conf 设定；权重存 <code>blobs/</code>，索引存 <code>manifests/</code>）</div>
   <div>📂 <b style="color:var(--accent);">comfyui</b>: <code>extra_model_paths.yaml</code> 配置的目录（默认 <code>$ComfyUI/models/</code>）</div>
+  <div>💡 <b>添加新模型</b>：GGUF 放到 <code>/data/ollama/models/blobs/</code>（或 <code>blobs/sha256-xxx</code> 命名），点 <b>➕ 添加/移除模型进列表</b> 自动注册（秒级，不解析权重）</div>
 </div>
 <div class="form-row">
 <div class="form-group"><label>模型</label><select id="model-select" style="min-width:380px"><option value="">— 加载模型到当前框架 —</option></select></div>
@@ -3547,6 +3687,36 @@ async function addModelsToList() {
     const resp = await fetchJSON('/api/scan_for_addition?framework=' + encodeURIComponent(currentFramework));
     _addModelsAll = resp.all || [];
     _addModelsVisible = resp.visible || [];
+
+    // v1.1.15: ollama 框架下, 扫描后检查未注册 GGUF → 弹进度遮罩 → 自动注册
+    if (currentFramework === 'ollama') {
+      let regResult = null;
+      try {
+        showLoadStatus(true);
+        updateLoadStatusUI({ status: 'loading', message: '检查未注册 GGUF...', progress: 30, elapsed_seconds: 0 });
+        regResult = await fetchJSON('/api/auto_register_gguf', 'POST', {});
+        if (regResult.registered && regResult.registered.length > 0) {
+          updateLoadStatusUI({ status: 'loading', message: '注册 ' + regResult.registered.length + ' 个 GGUF...', progress: 70, elapsed_seconds: 1 });
+          // 重新扫描
+          const resp2 = await fetchJSON('/api/scan_for_addition?framework=' + encodeURIComponent(currentFramework));
+          _addModelsAll = resp2.all || [];
+          _addModelsVisible = resp2.visible || [];
+          updateLoadStatusUI({ status: 'done', message: '✅ 已注册: ' + regResult.registered.join(', '), progress: 100, elapsed_seconds: 2 });
+          showToast('✅ 自动注册 ' + regResult.registered.length + ' 个模型: ' + regResult.registered.join(', '), 'success', 5000);
+          setTimeout(function() { showLoadStatus(false); }, 3000);
+        } else {
+          showLoadStatus(false);
+        }
+        if (regResult.errors && regResult.errors.length > 0) {
+          showToast('⚠️ 部分注册失败: ' + regResult.errors.join('; '), 'error', 8000);
+        }
+      } catch (e) {
+        updateLoadStatusUI({ status: 'error', message: '自动注册失败: ' + e.message, progress: 100, elapsed_seconds: 0 });
+        setTimeout(function() { showLoadStatus(false); }, 5000);
+        showToast('自动注册失败: ' + e.message, 'error');
+      }
+    }
+
     document.getElementById('add-models-modal-fw').textContent = currentFramework;
     renderAddModelsList();
     document.getElementById('add-models-modal').style.display = 'flex';

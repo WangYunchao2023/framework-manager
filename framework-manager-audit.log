@@ -257,3 +257,10 @@
 [2026-06-22 21:24:04] 自动注册 GGUF            | name=auto-37f5ad95:ctx128k, size=104, sha=37f5ad95406e | ok
 [2026-06-22 21:24:28] 扫描可用模型               | framework=ollama, total=7, visible=6, hidden=2     | ok
 [2026-06-22 21:24:34] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 21:28:28] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 21:28:37] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 21:28:42] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 21:35:29] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 21:56:35] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=2     | ok
+[2026-06-22 22:16:20] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': 50, 'batch_size': None, 'flash_attention': 1} | ok
+[2026-06-22 22:16:31] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': 35, 'batch_size': None, 'flash_attention': 1} | ok

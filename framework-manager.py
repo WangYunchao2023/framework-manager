@@ -3665,7 +3665,7 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="card" id="ingest-gguf-card" style="display:none;">
 <h2>📥 自动注册下载的模型</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 自动计算 sha256 · 硬链接为 <code>sha256-xxx</code> · 删除原文件 · 解析 GGUF header · 生成 manifest · 使用「📋 新模型注册参数」中的设置
+  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 自动计算 sha256 · 硬链接为 <code>sha256-xxx</code> · 删除原文件 · 解析 GGUF header · 生成 manifest · 使用「📋 新模型注册参数」中的设置 · <b style="color:#4ade80;">不影响已注册模型</b>
 </p>
 <div class="form-row">
   <div class="form-group" style="flex:1;">

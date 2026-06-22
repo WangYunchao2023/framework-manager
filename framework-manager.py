@@ -3362,8 +3362,8 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
   </div>
   <div class="form-group">
     <label>repeat_penalty</label>
-    <select id="mgen-repeat-penalty" style="min-width:180px;">
-      <option value="1.0" selected>⭐ 1.0 (推荐, 不重复惩罚)</option>
+    <select id="mgen-repeat-penalty" style="min-width:160px;">
+      <option value="1" selected>⭐ 1.0 (推荐)</option>
       <option value="1.1">1.1 (轻微)</option>
       <option value="1.2">1.2 (中等)</option>
       <option value="1.3">1.3 (强)</option>

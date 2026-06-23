@@ -4,9 +4,15 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.2.1
+版本：1.2.2
 
 更新日志:
+- v1.2.2: OpenAI 兼容端点 (POST /v1/chat/completions + GET /v1/models)
+  - 接收标准 OpenAI 格式请求, 内部复用 /api/qrun 队列
+  - model 格式: "framework/modelname" (ollama/qwen3.6-35b / beellama/qwen3.6-q3)
+  - 缺省前缀默认 ollama
+  - 让 OpenClaw/Claude Code/Cursor/Cherry Studio 等所有 OpenAI 兼容工具可作为 Agent 接入
+  - append-only: 不改任何现有函数/路由
 - v1.2.1: 修复 beellama 队列调用完全失败
   - switch-inference.sh v1.0.4: gemma-4-26b 命令替换报错导致整个脚本退出 → 改为固定路径
   - alias_map 加 qwen3.6-uncensored → qwen3.6-35b-uncensored
@@ -5724,6 +5730,175 @@ def api_qstatus():
             "current_model": current_model,
             "worker_started": _qrun_worker_started,
         })
+
+
+# ── v1.2.2: OpenAI 兼容端点 ────────────────────────────────────────
+# 目的：让 Agent (OpenClaw/Claude Code/Cursor/Cherry Studio) 用标准 OpenAI 协议接入
+# base_url = http://localhost:9528/v1
+# model 格式: "framework/modelname" (如 "ollama/qwen3.6-35b" / "beellama/qwen3.6-q3")
+# append-only: 不改任何现有函数/路由
+
+def _openai_chat_ollama_to_openai(ollama_resp, model_str):
+    """ollama /api/chat 响应 → OpenAI /v1/chat/completions 响应"""
+    msg = ollama_resp.get("message", {}) or {}
+    return {
+        "id": f"chatcmpl-{ollama_resp.get('created_at', '').replace(':', '').replace('.', '').replace('-', '')[:24] or 'fm'}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model_str,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": msg.get("role", "assistant"),
+                "content": msg.get("content", "")
+            },
+            "finish_reason": "stop" if ollama_resp.get("done") else "length"
+        }],
+        "usage": {
+            "prompt_tokens": ollama_resp.get("prompt_eval_count", 0) or 0,
+            "completion_tokens": ollama_resp.get("eval_count", 0) or 0,
+            "total_tokens": (ollama_resp.get("prompt_eval_count", 0) or 0) +
+                            (ollama_resp.get("eval_count", 0) or 0)
+        }
+    }
+
+
+@app.route("/v1/chat/completions", methods=["POST"])
+def openai_chat_completions():
+    """OpenAI 兼容聊天端点
+    接收标准 OpenAI 格式请求, 内部转给 /api/qrun 队列, 把响应转回 OpenAI 格式
+    """
+    global last_activity_time
+    last_activity_time = time.time()
+
+    data = request.get_json(silent=True) or {}
+    model_str = (data.get("model") or "").strip()
+    messages = data.get("messages") or []
+    if not model_str:
+        return jsonify({"error": {"message": "model is required", "type": "invalid_request_error"}}), 400
+    if not messages:
+        return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error"}}), 400
+
+    # 解析 model: "framework/modelname"
+    if "/" in model_str:
+        framework_raw, model_name = model_str.split("/", 1)
+    else:
+        # 兼容: 没有前缀默认 ollama
+        framework_raw, model_name = "ollama", model_str
+
+    framework = _qrun_normalize_framework(framework_raw)
+    if not framework:
+        return jsonify({
+            "error": {
+                "message": f"unsupported framework: {framework_raw}. Use ollama/ or beellama/ prefix.",
+                "type": "invalid_request_error"
+            }
+        }), 400
+    if framework == "comfyui":
+        return jsonify({
+            "error": {
+                "message": "comfyui not supported via OpenAI API in v1.2.2; please call /api/qrun directly",
+                "type": "invalid_request_error"
+            }
+        }), 501
+
+    # 构造上游请求 body
+    if framework == "ollama":
+        upstream_path = "/api/chat"
+        # ollama /api/chat body 格式
+        body = {
+            "model": model_name,
+            "messages": messages,
+            "stream": False,
+        }
+        # 透传 ollama 特定参数 (options / format / keep_alive)
+        for k in ("options", "format", "keep_alive"):
+            if k in data:
+                body[k] = data[k]
+    elif framework == "beellama":
+        upstream_path = "/v1/chat/completions"
+        # beellama 接收 OpenAI 格式, 直接透传 + 修正 model
+        body = dict(data)
+        body["model"] = model_name
+        body["stream"] = False
+
+    # 调 /api/qrun 队列（同步等结果, OpenAI 协议默认同步）
+    _ensure_qrun_worker()
+    task = _qrun_new_task(framework, model_name, upstream_path, "POST", body,
+                          {"X-Source": "openai-compat"}, "openai-compat")
+
+    timeout_s = float(data.get("timeout", 600))
+    deadline = time.time() + timeout_s
+    t = None
+    while time.time() < deadline:
+        with _qrun_lock:
+            t = _qrun_tasks.get(task["task_id"])
+        if t and t["status"] in ("done", "error", "cancelled"):
+            break
+        time.sleep(0.2)
+
+    if not t or t["status"] not in ("done", "error", "cancelled"):
+        return jsonify({
+            "error": {"message": f"task timeout after {timeout_s}s", "type": "timeout"},
+            "task_id": task["task_id"]
+        }), 504
+
+    if t["status"] == "error":
+        return jsonify({
+            "error": {
+                "message": t.get("error", "unknown error"),
+                "type": "framework_error",
+                "task_id": t["task_id"]
+            }
+        }), 500
+
+    # 解析上游响应, 转 OpenAI 格式
+    result = t.get("result", {})
+    body_b64 = result.get("body_b64", "")
+    if not body_b64:
+        return jsonify({
+            "error": {"message": "empty upstream response", "type": "framework_error"},
+            "task_id": t["task_id"]
+        }), 500
+
+    import base64 as _oa_b64
+    upstream_data = json.loads(_oa_b64.b64decode(body_b64))
+
+    if framework == "ollama":
+        openai_resp = _openai_chat_ollama_to_openai(upstream_data, model_str)
+    elif framework == "beellama":
+        # beellama 已经是 OpenAI 格式, 修正 model 字段后直接返回
+        upstream_data["model"] = model_str
+        if "created" not in upstream_data:
+            upstream_data["created"] = int(time.time())
+        openai_resp = upstream_data
+
+    # 附加 framework-manager 内部信息（不影响 OpenAI 兼容性）
+    openai_resp["_task_id"] = t["task_id"]
+    openai_resp["_framework"] = framework
+    openai_resp["_switched"] = t.get("switched", False)
+    return jsonify(openai_resp)
+
+
+@app.route("/v1/models", methods=["GET"])
+def openai_list_models():
+    """OpenAI 兼容模型列表端点
+    返回所有可用模型 (ollama + beellama)
+    """
+    models = []
+    for fw_name in ("ollama", "beellama"):  # comfyui 暂不支持
+        try:
+            fw_models = get_framework_models(fw_name, force_refresh=True)
+            for m in fw_models:
+                models.append({
+                    "id": f"{fw_name}/{m}",
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": fw_name
+                })
+        except Exception as e:
+            log.warning(f"[openai-compat] failed to list {fw_name} models: {e}")
+    return jsonify({"object": "list", "data": models})
 
 
 # ── 主程序 ───────────────────────────────────────────────────────

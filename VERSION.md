@@ -1,5 +1,60 @@
 # framework-manager 版本历史
 
+## v1.2.2 (2026-06-23)
+
+### 🆕 新增：OpenAI 兼容端点
+
+让 OpenClaw/Claude Code/Cursor/Cherny Studio 等所有 OpenAI 兼容 Agent 工具能以 base_url 形式接入 framework-manager，统一调度所有本地模型 (ollama/beellama/comfyui)。
+
+### 端点
+
+| 路径 | 用途 |
+|------|------|
+| `POST /v1/chat/completions` | OpenAI 兼容聊天端点（同步）|
+| `GET /v1/models` | 列出所有可用模型 |
+
+### 接入方式
+
+```bash
+# OpenClaw / Claude Code / Cursor / Cherry Studio / Open WebUI 等
+# base_url 改为:
+http://localhost:9528/v1
+
+# model 字段填:
+"ollama/qwen3.6-35b"    # Ollama + qwen3.6-35b
+"beellama/qwen3.6-q3"   # beellama + qwen3.6-q3
+"comfyui/sd_xl"         # (暂不支持 OpenAI 协议, 会返回 501)
+
+# 也可以不加前缀, 默认 ollama
+"qwen3.6-35b"           # = "ollama/qwen3.6-35b"
+```
+
+### 内部机制
+
+- 完全复用 v1.2.0 的 `/api/qrun` 队列机制
+- 透传 OpenAI messages 到上游
+- 自动转译上游响应到 OpenAI 格式 (ollama native API → OpenAI ChatCompletion)
+- beellama 本身就是 OpenAI 兼容, 直接透传
+
+### 测试覆盖
+
+| 场景 | 结果 |
+|------|------|
+| T1 `/v1/models` 列出模型 | ✅ ollama + beellama 全列出 |
+| T2 beellama 当前模型命中 | ✅ 1s, switched=false |
+| T3 beellama → ollama 跨框架 | ✅ 29s, switched=true |
+| T4 ollama 内部跨模型 | ✅ 93s, switched=true |
+| T5 不支持的 framework | ✅ 400 + 明确错误信息 |
+| T6 comfyui 拒绝 (OpenAI 不适合异步工作流) | ✅ 501 + hint |
+| T7 缺 model / messages 字段 | ✅ 400 |
+| T8 缺省前缀默认 ollama | ✅ 兼容 |
+
+### Diff
+
++1 endpoint (`/v1/chat/completions`) + 1 endpoint (`/v1/models`) + 1 helper 函数, append-only 不改任何现有逻辑
+
+---
+
 ## v1.2.1 (2026-06-23)
 
 ### 🐛 修复：beellama 队列调用完全失败

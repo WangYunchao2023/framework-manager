@@ -318,3 +318,8 @@
 [2026-06-23 09:32:09] 切换框架                 | → ollama                                           | ok
 [2026-06-23 09:33:38] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
 [2026-06-23 09:35:00] v1.2.2 升版     | OpenAI 兼容端点 (POST /v1/chat/completions + GET /v1/models) | ok
+[2026-06-23 09:58:41] 切换框架                 | → ollama                                           | ok
+[2026-06-23 09:59:15] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-23 09:59:19] 切换框架                 | → beellama                                         | ok
+[2026-06-23 10:00:33] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-23 10:00:00] v1.2.2-patch1 升版 | 加 framework-manager/current 特殊 model 名 + 配置到 OpenClaw main/cortana-shadow | ok

@@ -4,9 +4,14 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.2.2
+版本：1.2.2-patch1
 
 更新日志:
+- v1.2.2-patch1: OpenAI 端点加特殊 model 名 "framework-manager/current"
+  - 收到后自动用当前显存里的模型 (current_framework/current_model)
+  - 允许用户在 9528 webui 中设置加载的模型, OpenClaw / Agent 用 framework-manager/current 即用该模型
+  - 无需切换 (已在显存), switched=False, 1s 响应
+  - 3 行代码改动
 - v1.2.2: OpenAI 兼容端点 (POST /v1/chat/completions + GET /v1/models)
   - 接收标准 OpenAI 格式请求, 内部复用 /api/qrun 队列
   - model 格式: "framework/modelname" (ollama/qwen3.6-35b / beellama/qwen3.6-q3)
@@ -5780,14 +5785,26 @@ def openai_chat_completions():
         return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error"}}), 400
 
     # 解析 model: "framework/modelname"
-    if "/" in model_str:
+    # v1.2.2-patch1: 支持 "framework-manager/current" — 用当前显存里的模型, 不需切换
+    if model_str == "framework-manager/current":
+        if not current_framework or not current_model:
+            return jsonify({
+                "error": {
+                    "message": "no model currently loaded; please load one via 9528 webui or /api/qrun",
+                    "type": "no_model_loaded"
+                }
+            }), 503
+        framework = current_framework
+        model_name = current_model
+        log.info(f"[openai-compat] framework-manager/current → use {framework}/{model_name}")
+    elif "/" in model_str:
         framework_raw, model_name = model_str.split("/", 1)
+        framework = _qrun_normalize_framework(framework_raw)
     else:
         # 兼容: 没有前缀默认 ollama
         framework_raw, model_name = "ollama", model_str
-
-    framework = _qrun_normalize_framework(framework_raw)
-    if not framework:
+        framework = _qrun_normalize_framework(framework_raw)
+    if framework is None and model_str != "framework-manager/current":
         return jsonify({
             "error": {
                 "message": f"unsupported framework: {framework_raw}. Use ollama/ or beellama/ prefix.",

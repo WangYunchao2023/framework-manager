@@ -323,3 +323,68 @@
 [2026-06-23 09:59:19] 切换框架                 | → beellama                                         | ok
 [2026-06-23 10:00:33] 加载模型                 | beellama/qwen3-14b                                 | ok
 [2026-06-23 10:00:00] v1.2.2-patch1 升版 | 加 framework-manager/current 特殊 model 名 + 配置到 OpenClaw main/cortana-shadow | ok
+[2026-06-23 14:31:35] task_register        | comfyui/wan2.1 task_id=test-178                    | ok
+[2026-06-23 14:31:35] task_done            | comfyui/wan2.1 task_id=test-178 success            | ok
+[2026-06-23 14:32:56] task_register        | comfyui/wan2.1 task_id=active-1                    | ok
+[2026-06-23 14:46:08] task_register        | comfyui/wan2.1_t2v task_id=ui-activ                | ok
+[2026-06-23 14:54:44] task_done            | comfyui/wan2.1_t2v task_id=ui-activ success        | ok
+[2026-06-23 15:03:53] 切换框架                 | → comfyui                                          | ok
+[2026-06-23 15:11:12] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-lo | ok
+[2026-06-23 15:14:04] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re | ok
+[2026-06-23 15:14:04] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re failed | ok
+[2026-06-23 15:18:06] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re | ok
+[2026-06-23 15:18:06] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re failed | ok
+[2026-06-23 15:19:30] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re | ok
+[2026-06-23 15:19:30] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re failed | ok
+[2026-06-23 15:19:59] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re | ok
+[2026-06-23 15:23:09] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re failed | ok
+[2026-06-23 15:23:09] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-lo failed | ok
+[2026-06-23 15:23:09] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re | ok
+[2026-06-23 15:29:15] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-re failed | ok
+[2026-06-23 16:08:52] 切换框架                 | → comfyui                                          | ok
+[2026-06-23 16:08:52] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-fi | ok
+[2026-06-23 16:18:18] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-fi failed | ok
+[2026-06-23 16:18:18] task_register        | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-v2 | ok
+[2026-06-23 16:33:39] 切换框架                 | → beellama                                         | ok
+[2026-06-23 16:39:03] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-23 16:43:29] task_register        | beellama/qwen3-14b task_id=demo-bee                | ok
+[2026-06-23 16:43:29] task_register        | beellama/qwen3-14b task_id=demo-bee                | ok
+[2026-06-23 16:43:29] task_register        | embedding/bge-m3 task_id=demo-emb                  | ok
+[2026-06-23 16:43:29] task_done            | embedding/bge-m3 task_id=demo-emb failed           | ok
+[2026-06-23 16:43:31] task_done            | beellama/qwen3-14b task_id=demo-bee success        | ok
+[2026-06-23 16:43:33] task_done            | beellama/qwen3-14b task_id=demo-bee success        | ok
+[2026-06-23 16:46:01] task_done            | comfyui/Wan2_2-T2V-A14B_HIGH_fp8.safetensors task_id=wan22-v2 failed | ok
+[2026-06-23 16:47:09] task_register        | beellama/qwen3-14b task_id=demo-q1-                | ok
+[2026-06-23 16:47:09] task_register        | beellama/qwen3-14b task_id=demo-q2-                | ok
+[2026-06-23 16:47:09] task_register        | beellama/qwen3-14b task_id=demo-q3-                | ok
+[2026-06-23 16:47:09] task_register        | beellama/qwen3-14b task_id=demo-q4-                | ok
+[2026-06-23 16:47:09] task_register        | beellama/qwen3-14b task_id=demo-q5-                | ok
+[2026-06-23 16:47:13] task_done            | beellama/qwen3-14b task_id=demo-q2- success        | ok
+[2026-06-23 16:47:13] task_done            | beellama/qwen3-14b task_id=demo-q1- success        | ok
+[2026-06-23 16:47:13] task_done            | beellama/qwen3-14b task_id=demo-q3- success        | ok
+[2026-06-23 16:47:15] task_done            | beellama/qwen3-14b task_id=demo-q4- success        | ok
+[2026-06-23 16:47:16] task_done            | beellama/qwen3-14b task_id=demo-q5- success        | ok
+[2026-06-23 17:09:31] 切换框架                 | → ollama                                           | ok
+[2026-06-23 17:44:17] task_register        | comfyui/test-model task_id=72c240ce auto_detect=True | ok
+[2026-06-23 17:44:35] task_done            | comfyui/test-model task_id=72c240ce failed         | ok
+[2026-06-23 17:45:00] task_register        | comfyui/Wan2.2 task_id=v15-comf auto_detect=True   | ok
+[2026-06-23 17:45:00] task_register        | ollama/qwen3:14b-ctx64k task_id=v15-olla auto_detect=True | ok
+[2026-06-23 17:45:00] task_register        | beellama/qwen3-14b task_id=v15-manu auto_detect=False | ok
+[2026-06-23 17:45:00] task_auto_done       | ollama/qwen3:14b-ctx64k task_id=v15-olla success   | ok
+[2026-06-23 17:45:32] 切换框架                 | → comfyui                                          | ok
+[2026-06-23 17:45:40] task_done            | comfyui/Wan2.2 task_id=v15-comf failed             | ok
+[2026-06-23 17:45:40] task_done            | beellama/qwen3-14b task_id=v15-manu failed         | ok
+[2026-06-23 17:47:13] task_register        | comfyui/flux_vae_bf16_big task_id=v15-real auto_detect=True | ok
+[2026-06-23 17:47:14] task_auto_done       | comfyui/flux_vae_bf16_big task_id=v15-real failed  | ok
+[2026-06-23 17:49:21] task_register        | comfyui/EmptyImage-test task_id=v15-ok-1 auto_detect=True | ok
+[2026-06-23 17:49:22] task_auto_done       | comfyui/EmptyImage-test task_id=v15-ok-1 success   | ok
+[2026-06-23 17:51:09] task_register        | comfyui/EmptyImage task_id=v15-ui-1 auto_detect=True | ok
+[2026-06-23 17:51:09] task_auto_done       | comfyui/EmptyImage task_id=v15-ui-1 success        | ok
+[2026-06-23 17:51:34] 切换框架                 | → ollama                                           | ok
+[2026-06-23 17:53:16] task_register        | ollama/qwen3:14b-ctx64k task_id=v15-olla auto_detect=True | ok
+[2026-06-23 17:53:18] task_auto_done       | ollama/qwen3:14b-ctx64k task_id=v15-olla success   | ok
+[2026-06-23 17:53:47] task_register        | beellama/qwen3-14b task_id=v15-mixe auto_detect=False | ok
+[2026-06-23 17:54:09] 切换框架                 | → comfyui                                          | ok
+[2026-06-23 17:55:08] task_register        | comfyui/EmptyImage task_id=v15-mixe auto_detect=True | ok
+[2026-06-23 17:55:10] task_auto_done       | comfyui/EmptyImage task_id=v15-mixe success        | ok
+[2026-06-23 17:55:49] task_done            | beellama/qwen3-14b task_id=v15-mixe failed         | ok

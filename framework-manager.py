@@ -4,9 +4,19 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.2.2-patch1
+版本：1.5.0
 
 更新日志:
+- v1.5.0: 任务自动检测 (framework_ref + 后台 watcher)
+  - task_register 可传 framework_ref: {prompt_id} (ComfyUI) 或 {detect: "model_unload"} (Ollama)
+  - 后台 watcher thread 每 2s 轮询框架原生信号
+    - ComfyUI: /history/{prompt_id} 出现 → auto task_done (查 status_str 判定 success/failed)
+    - Ollama: /api/ps 模型消失 → auto task_done (keep_alive 过期或主动 unload)
+    - beellama/embedding: llama.cpp 无任务 API, 必须手动 task_done (拒绝 framework_ref)
+  - 自动提取输出文件 (images/gifs) 和错误信息
+  - WebUI "📋 活跃任务" 卡片加 "🤖 自动检测" 紫色 badge
+  - 完全 append-only: 不修改任何现有函数/路由
+  - ~140 行代码
 - v1.2.2-patch1: OpenAI 端点加特殊 model 名 "framework-manager/current"
   - 收到后自动用当前显存里的模型 (current_framework/current_model)
   - 允许用户在 9528 webui 中设置加载的模型, OpenClaw / Agent 用 framework-manager/current 即用该模型
@@ -312,7 +322,7 @@ DEFAULTS_FILE = os.path.join(CONFIG_DIR, "framework-manager-defaults.json")
 HIDDEN_MODELS_FILE = os.path.join(CONFIG_DIR, "framework-manager-hidden.json")
 
 # v1.1.8 新增: ComfyUI 相关路径
-COMFYUI_DIR = "/data/ComfyUI"  # 实际部署路径
+COMFYUI_DIR = "/home/wangyc/ComfyUI"  # v1.3.0-patch1: 修正路径 (原 /data/ComfyUI 是旧部署)
 COMFYUI_EXTRA_PATHS_YAML = os.path.join(COMFYUI_DIR, "extra_model_paths.yaml")
 COMFYUI_USER_SERVICE_DIR = os.path.expanduser("~/.config/systemd/user")
 COMFYUI_SERVICE_FILE = os.path.join(COMFYUI_USER_SERVICE_DIR, "comfyui.service")
@@ -3942,9 +3952,31 @@ loras: /home/wangyc/my_loras"></textarea>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px">💡 切换框架时模型列表会自动更新</p>
 </div>
 <div class="card">
-<h2>📋 队列情况</h2>
-<div style="font-size:1.1rem;font-family:monospace" id="queue-length">0 任务</div>
-<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:monospace" id="queue-details">无排队任务</div>
+<h2>🔍 VRAM 显存监测</h2>
+<div style="margin-bottom:12px;">
+  <div style="display:flex;justify-content:space-between;font-size:0.85rem;color:var(--text-dim);margin-bottom:6px;">
+    <span>GPU 显存使用</span>
+    <span id="vram-pct-text">--</span>
+  </div>
+  <div style="background:#2a2a35;border-radius:4px;height:14px;overflow:hidden;">
+    <div id="vram-bar" style="background:linear-gradient(90deg,#4ade80,#fbbf24,#ef4444);height:100%;width:0%;transition:width 0.5s;"></div>
+  </div>
+  <div style="font-size:0.75rem;color:var(--text-dim);margin-top:6px;" id="vram-detail">--</div>
+</div>
+<div style="font-size:0.85rem;color:var(--text-dim);margin-bottom:8px;">🟢 显存中的模型</div>
+<div id="vram-models" style="display:flex;flex-direction:column;gap:8px;">
+  <div style="color:var(--text-dim);font-style:italic;">加载中…</div>
+</div>
+<div style="font-size:0.7rem;color:var(--text-dim);margin-top:10px;text-align:right;" id="vram-age">--</div>
+</div>
+<div class="card">
+<h2>📋 活跃任务 <span id="active-task-count" style="font-size:0.75rem;color:var(--text-dim);font-weight:normal;">(0)</span></h2>
+<div id="active-tasks" style="display:flex;flex-direction:column;gap:8px;">
+<div style="color:var(--text-dim);font-style:italic;">加载中…</div>
+</div>
+<div style="font-size:0.7rem;color:var(--text-dim);margin-top:10px;">
+💡 Skill 启动 GPU 任务前调 <code>POST /api/task_register</code>, 完成后 <code>POST /api/task_done</code>
+</div>
 </div>
 <div class="card">
 <h2>⚙️ 默认设置</h2>
@@ -4123,23 +4155,131 @@ async function refresh() {
         modelParamsCard.style.display = 'none';
       }
     }
-    document.getElementById('queue-length').textContent = (data.queue.total || 0) + ' 任务';
-    // 更新队列详情
-    const queueDetails = document.getElementById('queue-details');
-    if (queueDetails && data.queue) {
-      const byFw = data.queue.by_framework || {};
-      const parts = [];
-      for (const [fw, cnt] of Object.entries(byFw)) {
-        parts.push(fw + ': ' + cnt);
-      }
-      queueDetails.textContent = parts.length > 0 ? parts.join(' | ') : '无排队任务';
-    }
+    // 原"队列情况"已被 v1.3.0 的 VRAM 实时监测取代
+    // VRAM 刷新逻辑见 refreshVram() 函数 + setInterval 每 5s 调用
+    if (typeof refreshVram === 'function') refreshVram();
     // 状态轮询不写日志，避免刷屏
     updateModelSelect(data.available_models);
   } catch (e) {
     log('刷新失败：' + e.message, 'error');
   }
 }
+
+// v1.3.0: VRAM Dashboard 刷新逻辑（独立函数, 被 refresh() 调用 + setInterval 每 5s 调用）
+const VRAM_STATE_COLORS = {
+  'processing': '#fbbf24',
+  'running': '#fbbf24',
+  'queued': '#60a5fa',
+  'loaded': '#4ade80',
+  'idle': '#4ade80',
+  'unknown': '#888',
+};
+const VRAM_FW_ICONS = {
+  'ollama': '🦙',
+  'beellama': '🐝',
+  'comfyui': '🎨',
+  'unknown': '❓',
+};
+function vramColorFor(pct) {
+  if (pct < 60) return '#4ade80';
+  if (pct < 85) return '#fbbf24';
+  return '#ef4444';
+}
+async function refreshVram() {
+  try {
+    const r = await fetch('/api/vram_status');
+    if (!r.ok) return;
+    const d = await r.json();
+    // 进度条 + 文本
+    const pct = d.gpu_used_pct || 0;
+    const bar = document.getElementById('vram-bar');
+    if (bar) {
+      bar.style.width = pct + '%';
+      bar.style.background = vramColorFor(pct);
+    }
+    const pctText = document.getElementById('vram-pct-text');
+    if (pctText) {
+      pctText.textContent = pct + '% (' + d.gpu_used_mb + ' / ' + d.gpu_total_mb + ' MB)';
+      pctText.style.color = vramColorFor(pct);
+    }
+    const detail = document.getElementById('vram-detail');
+    if (detail) {
+      detail.textContent = 'GPU 利用率: ' + d.gpu_util_pct + '% · 活跃框架: ' + (d.active_fw || 'none') + (d.active_model ? ' / ' + d.active_model : '');
+    }
+    // 模型列表
+    const list = document.getElementById('vram-models');
+    if (list) {
+      if (d.error) {
+        list.innerHTML = '<div style="color:#ef4444;">⚠️ ' + d.error + '</div>';
+      } else if (!d.models || d.models.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-dim);font-style:italic;">GPU 空闲</div>';
+      } else {
+        list.innerHTML = d.models.map(m => {
+          const color = VRAM_STATE_COLORS[m.task_state] || '#888';
+          const icon = VRAM_FW_ICONS[m.framework] || '❓';
+          const modelShort = (m.model || m.process).split('/').pop().slice(0, 40);
+          return '<div style="background:#2a2a35;border-radius:4px;padding:6px 8px;border-left:3px solid ' + color + ';">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+              '<span style="font-weight:500;">' + icon + ' ' + (m.framework || 'unknown') + '</span>' +
+              '<span style="font-size:10px;color:#888;">' + m.used_mb + ' MB</span>' +
+            '</div>' +
+            '<div style="font-size:11px;color:#bbb;margin-top:2px;word-break:break-all;">' + modelShort + '</div>' +
+            '<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">PID ' + m.pid + ' · <span style="color:' + color + ';">●</span> ' + (m.task_state || 'unknown') + (m.task_info ? ' · ' + m.task_info : '') + '</div>' +
+          '</div>';
+        }).join('');
+      }
+    }
+    const age = document.getElementById('vram-age');
+    if (age) {
+      age.textContent = d.age_sec != null ? ('更新于 ' + d.age_sec + ' 秒前 · 每 5s 自动刷新') : '更新中…';
+    }
+    // v1.4.0: 活跃任务列表渲染
+    const taskList = document.getElementById('active-tasks');
+    const taskCount = document.getElementById('active-task-count');
+    const tasks = d.tasks || [];
+    if (taskCount) {
+      taskCount.textContent = '(' + tasks.length + ')';
+    }
+    if (taskList) {
+      if (tasks.length === 0) {
+        taskList.innerHTML = '<div style="color:var(--text-dim);font-style:italic;">无活跃任务</div>';
+      } else {
+        taskList.innerHTML = tasks.map(t => {
+          const fwIcon = VRAM_FW_ICONS[t.framework] || '❓';
+          const estTxt = t.estimated_duration_sec ? (' / 预计 ' + t.estimated_duration_sec + 's') : '';
+          const progressPct = t.estimated_duration_sec ? Math.min(100, Math.round(t.duration_sec * 100 / t.estimated_duration_sec)) : 0;
+          const progressBar = t.estimated_duration_sec ? (
+            '<div style="background:#2a2a35;border-radius:3px;height:4px;overflow:hidden;margin-top:4px;">' +
+              '<div style="background:' + (progressPct < 80 ? '#4ade80' : '#fbbf24') + ';height:100%;width:' + progressPct + '%;transition:width 1s;"></div>' +
+            '</div>'
+          ) : '';
+          const metaTxt = t.metadata && Object.keys(t.metadata).length > 0 ?
+            '<div style="font-size:10px;color:#666;margin-top:3px;">' + JSON.stringify(t.metadata) + '</div>' : '';
+          // v1.5.0: 自动检测标记
+          const autoBadge = t.auto_detect ? 
+            '<span title="框架原生信号自动检测 (ComfyUI history / Ollama /api/ps)" style="background:#4f46e5;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:6px;">🤖 自动检测</span>' : '';
+          return '<div style="background:#2a2a35;border-radius:4px;padding:8px 10px;border-left:3px solid #fbbf24;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+              '<span style="font-weight:500;">' + fwIcon + ' ' + (t.framework || 'unknown') + autoBadge + '</span>' +
+              '<span style="font-size:10px;color:#888;">● ' + t.state + '</span>' +
+            '</div>' +
+            '<div style="font-size:12px;color:#bbb;margin-top:3px;">' + (t.model || 'unknown') + '</div>' +
+            '<div style="font-size:11px;color:#888;margin-top:3px;">' +
+              '⏱️ ' + t.duration_sec + 's' + estTxt +
+              ' · 来源: ' + t.source +
+            '</div>' +
+            progressBar + metaTxt +
+          '</div>';
+        }).join('');
+      }
+    }
+  } catch (e) {
+    console.error('refreshVram error:', e);
+  }
+}
+// 首次加载 + 每 5s 刷新
+refreshVram();
+setInterval(refreshVram, 5000);
 function updateModelSelect(models) {
   var sel = document.getElementById('model-select');
   var prevValue = sel.value;  // 保存用户当前选中的值
@@ -5918,6 +6058,582 @@ def openai_list_models():
     return jsonify({"object": "list", "data": models})
 
 
+# ── v1.3.0: VRAM 监测模块 ─────────────────────────────────────────
+# 目的: 被动观测 GPU 显存中所有进程 + 各 framework 任务状态
+#       数据源唯一 = nvidia-smi (物理真理) + 各 framework API (语义补充)
+#       不预估、不调度、不 stop 服务
+import subprocess as _vram_subprocess
+
+_vram_state = {
+    "gpu_total_mb": 0,
+    "gpu_used_mb": 0,
+    "gpu_used_pct": 0,
+    "gpu_util_pct": 0,
+    "models": [],          # [{pid, process, used_mb, framework, model, task_state, task_info}]
+    "active_fw": None,     # 与 current_framework 同步
+    "active_model": None,  # 与 current_model 同步
+    "updated_at": 0,
+    "error": None,
+}
+
+_vram_monitor_started = False
+_vram_monitor_lock = threading.Lock()
+
+
+def _vram_scan_nvidia_smi():
+    """调用 nvidia-smi 拿 GPU 总体 + 每个进程。返回 dict 或带 _err 字段的错误 dict。
+    注: nvidia-smi 不支持同时 --query-gpu + --query-compute-apps, 拆两次调用。
+    """
+    try:
+        # 1. GPU 总体
+        gpu_out = _vram_subprocess.check_output([
+            "nvidia-smi",
+            "--query-gpu=memory.total,memory.used,utilization.gpu",
+            "--format=csv,noheader,nounits"
+        ], text=True, timeout=5).strip()
+        # 2. 每个进程
+        proc_out = _vram_subprocess.check_output([
+            "nvidia-smi",
+            "--query-compute-apps=pid,process_name,used_memory",
+            "--format=csv,noheader,nounits"
+        ], text=True, timeout=5).strip()
+    except FileNotFoundError:
+        return {"_err": "nvidia-smi not installed"}
+    except _vram_subprocess.TimeoutExpired:
+        return {"_err": "nvidia-smi timeout"}
+    except Exception as e:
+        return {"_err": f"nvidia-smi failed: {e}"}
+
+    # 解析 GPU 总体
+    try:
+        parts = [x.strip() for x in gpu_out.split(",")]
+        gpu_total = int(parts[0])
+        gpu_used = int(parts[1])
+        gpu_util = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    except Exception:
+        return {"_err": f"parse gpu line failed: {gpu_out}"}
+
+    # 解析每个进程
+    models = []
+    for line in proc_out.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) >= 3:
+            try:
+                models.append({
+                    "pid": int(parts[0]),
+                    "process": parts[1],
+                    "used_mb": int(parts[2]),
+                })
+            except Exception:
+                continue
+
+    return {
+        "gpu_total_mb": gpu_total,
+        "gpu_used_mb": gpu_used,
+        "gpu_util_pct": gpu_util,
+        "models": models,
+    }
+
+
+def _vram_enrich_ollama(models):
+    """Ollama: /api/ps 拿当前 loaded models + 正在处理的请求数"""
+    try:
+        req = _urlreq.Request("http://localhost:11434/api/ps", method="GET")
+        with _urlreq.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return
+
+    ollama_models = data.get("models", []) or []
+    # 按进程名匹配 ollama 进程
+    ollama_procs = [m for m in models if m["process"].lower() in ("ollama", "ollama_llama_server")]
+    if not ollama_procs:
+        return
+
+    # 每个 loaded model 分配给它对应的进程 (按 used_mb 排序匹配)
+    ollama_models_sorted = sorted(ollama_models, key=lambda x: x.get("size_vram", 0), reverse=True)
+    ollama_procs_sorted = sorted(ollama_procs, key=lambda x: x["used_mb"], reverse=True)
+
+    for i, proc in enumerate(ollama_procs_sorted):
+        if i < len(ollama_models_sorted):
+            m = ollama_models_sorted[i]
+            ctx_tokens = sum(c.get("n_tokens", 0) for c in m.get("context", []) or [])
+            proc["framework"] = "ollama"
+            proc["model"] = m.get("name", "unknown")
+            proc["vram_size_mb"] = m.get("size_vram", 0) // (1024 * 1024)
+            if ctx_tokens > 0:
+                proc["task_state"] = "processing"
+                proc["task_info"] = f"正在处理 (ctx={ctx_tokens} tokens)"
+            else:
+                proc["task_state"] = "loaded"
+                proc["task_info"] = "已加载, 空闲"
+        else:
+            proc["framework"] = "ollama"
+            proc["model"] = "unknown"
+            proc["task_state"] = "loaded"
+            proc["task_info"] = "ollama 进程"
+
+
+def _vram_enrich_comfyui(models):
+    """ComfyUI: /queue 拿当前 running + pending 任务数"""
+    try:
+        req = _urlreq.Request("http://localhost:8188/queue", method="GET")
+        with _urlreq.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return
+
+    running = data.get("queue_running", []) or []
+    pending = data.get("queue_pending", []) or []
+
+    # 匹配 comfyui 相关进程
+    for proc in models:
+        pname = proc["process"].lower()
+        if "comfy" in pname or "main.py" in pname or proc["pid"] in [r.get("pid") for r in running if isinstance(r, dict) and "pid" in r]:
+            proc["framework"] = "comfyui"
+            if running:
+                proc["task_state"] = "running"
+                proc["task_info"] = f"queue={len(running) + len(pending)} ({len(running)} running, {len(pending)} pending)"
+            elif pending:
+                proc["task_state"] = "queued"
+                proc["task_info"] = f"pending={len(pending)}"
+            else:
+                proc["task_state"] = "idle"
+                proc["task_info"] = "ComfyUI 空闲"
+
+
+def _vram_enrich_beellama(models):
+    """beellama / embedding: 看进程名是否含 llama-server, 再看参数区分
+    - 含 --embedding 或 --port 11999 → embedding 服务 (bge-m3 等)
+    - 其余 llama-server → beellama LLM
+    """
+    for proc in models:
+        pname = proc["process"].lower()
+        if "beellama" not in pname and "llama-server" not in pname and "wrapper" not in pname:
+            continue
+        # 读 /proc/PID/cmdline 区分服务类型
+        cmdline = ""
+        try:
+            with open(f'/proc/{proc["pid"]}/cmdline', 'rb') as f:
+                cmdline = f.read().decode('utf-8', errors='ignore').replace('\x00', ' ')
+        except Exception:
+            pass
+        # embedding 服务识别: --embedding 参数 或端口 11999
+        if '--embedding' in cmdline or '--port 11999' in cmdline or '11999' in cmdline:
+            if "framework" not in proc:
+                proc["framework"] = "embedding"
+                if "task_state" not in proc:
+                    proc["task_state"] = "loaded"
+                    proc["task_info"] = "embedding 服务 (memory_search)"
+            continue
+        # 其余 = beellama LLM
+        if "framework" not in proc:
+            proc["framework"] = "beellama"
+            if "task_state" not in proc:
+                proc["task_state"] = "loaded"
+                proc["task_info"] = "beellama 进程"
+
+
+def _vram_enrich_unknown(models):
+    """未识别的进程: 标记 unknown"""
+    for proc in models:
+        if "framework" not in proc:
+            proc["framework"] = "unknown"
+            proc["task_state"] = "unknown"
+            proc["task_info"] = f"未识别进程 {proc['process']}"
+
+
+def _vram_monitor_loop():
+    """每 5s 扫一次。错误时不退出, 持续重试。"""
+    global _vram_state
+    log.info("[vram] monitor thread started")
+    while True:
+        try:
+            with _vram_monitor_lock:
+                raw = _vram_scan_nvidia_smi()
+
+                if raw and "_err" in raw:
+                    _vram_state["error"] = raw["_err"]
+                    _vram_state["updated_at"] = time.time()
+                elif raw:
+                    models = raw.pop("models", [])
+                    # framework 推断 (各框架互不冲突, 都尝试)
+                    _vram_enrich_ollama(models)
+                    _vram_enrich_comfyui(models)
+                    _vram_enrich_beellama(models)
+                    _vram_enrich_unknown(models)
+
+                    gpu_total = raw.get("gpu_total_mb", 0)
+                    gpu_used = raw.get("gpu_used_mb", 0)
+                    used_pct = int(gpu_used * 100 / gpu_total) if gpu_total > 0 else 0
+
+                    _vram_state.update({
+                        "gpu_total_mb": gpu_total,
+                        "gpu_used_mb": gpu_used,
+                        "gpu_used_pct": used_pct,
+                        "gpu_util_pct": raw.get("gpu_util_pct", 0),
+                        "models": models,
+                        "active_fw": current_framework,
+                        "active_model": current_model,
+                        "updated_at": time.time(),
+                        "error": None,
+                    })
+        except Exception as e:
+            log.error(f"[vram] monitor error: {e}")
+            _vram_state["error"] = str(e)
+            _vram_state["updated_at"] = time.time()
+        time.sleep(5)
+
+
+def _ensure_vram_monitor():
+    global _vram_monitor_started
+    with _vram_monitor_lock:
+        if _vram_monitor_started:
+            return
+        t = threading.Thread(target=_vram_monitor_loop, name="vram-monitor", daemon=True)
+        t.start()
+        _vram_monitor_started = True
+        log.info("[vram] monitor thread spawned")
+
+
+@app.route("/api/vram_status", methods=["GET"])
+def api_vram_status():
+    """VRAM 状态端点 (v1.3.0 + v1.4.0 task_register 增强)
+    数据源: nvidia-smi (物理) + 各 framework API (语义) + task_register (精确)
+    返回: GPU 总体 + 所有进程 + 每个进程的 framework/model/task_state + 所有活跃任务
+    """
+    _ensure_vram_monitor()
+    age = int(time.time() - _vram_state.get("updated_at", 0)) if _vram_state.get("updated_at") else None
+    active_tasks = _list_active_tasks()
+    return jsonify({
+        **_vram_state,
+        "age_sec": age,
+        "tasks": active_tasks,           # v1.4.0 新增: task_register 报告的活跃任务
+        "task_count": len(active_tasks),
+    })
+
+
+# ── v1.4.0: 任务追踪 (task_register / task_done) ───────────────────────
+# 目的: 精确追踪 GPU 任务。Skill 启动任务前 register, 完成后 done.
+#       数据存内存 (重启后丢失), 不持久化.
+#       不修改任何现有函数/路由, 仅新增
+import uuid as _task_uuid
+
+_tasks = {}               # task_id → task dict
+_tasks_lock = threading.Lock()
+_TASK_HISTORY_MAX = 200   # 内存中最多保留 200 个已完成任务
+
+
+def _list_active_tasks():
+    """返回当前运行中/排队的任务列表 (不含已完成/失败)"""
+    now = time.time()
+    out = []
+    with _tasks_lock:
+        for t in _tasks.values():
+            if t["state"] in ("running", "queued"):
+                started = t.get("started_at")
+                duration = (now - started) if started else (now - t["registered_at"])
+                out.append({
+                    "task_id": t["task_id"],
+                    "framework": t["framework"],
+                    "model": t["model"],
+                    "state": t["state"],
+                    "source": t["source"],
+                    "registered_at": t["registered_at"],
+                    "started_at": t.get("started_at"),
+                    "duration_sec": round(duration, 1),
+                    "estimated_duration_sec": t.get("estimated_duration_sec"),
+                    "metadata": t.get("metadata", {}),
+                })
+    return out
+
+
+@app.route("/api/task_register", methods=["POST"])
+def api_task_register():
+    """注册一个 GPU 任务 (v1.4.0)
+    Body (v1.5.0 加 framework_ref 自动检测):
+        {
+            "task_id": "可选, 不传则生成 uuid",
+            "framework": "ollama|beellama|comfyui|embedding",  # 必填
+            "model": "qwen3.6-q3",                             # 必填
+            "estimated_duration_sec": 300,                      # 可选
+            "source": "video-gen-skill",                       # 可选, 调用方标识
+            "metadata": {},                                    # 可选, 附加信息
+            "framework_ref": {                                  # v1.5.0 新增, 可选
+                # ComfyUI: 提供 prompt_id, watcher 自动检测完成
+                "prompt_id": "abc-123-xyz",
+                # Ollama: 设置 detect="model_unload", watcher 等模型从 /api/ps 消失
+                "detect": "model_unload"
+            }
+        }
+    返回: {status: "ok", task_id: "...", state: "...", auto_detect: true/false}
+    """
+    data = request.get_json(silent=True) or {}
+    fw = (data.get("framework") or "").lower().strip()
+    if fw not in ("ollama", "beellama", "comfyui", "embedding"):
+        return jsonify({"error": "framework must be one of ollama/beellama/comfyui/embedding"}), 400
+    model = (data.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+
+    task_id = (data.get("task_id") or "").strip() or _task_uuid.uuid4().hex[:16]
+    now = time.time()
+    framework_ref = data.get("framework_ref") or {}
+
+    # v1.5.0: 验证 framework_ref 合法性
+    auto_detect = False
+    if fw == "comfyui" and "prompt_id" in framework_ref:
+        if not isinstance(framework_ref["prompt_id"], str) or len(framework_ref["prompt_id"]) < 4:
+            return jsonify({"error": "framework_ref.prompt_id must be string (ComfyUI prompt_id)"}), 400
+        auto_detect = True
+    elif fw == "ollama" and framework_ref.get("detect") == "model_unload":
+        auto_detect = True
+    elif fw in ("beellama", "embedding"):
+        if framework_ref:
+            return jsonify({"error": f"framework={fw} 不支持 framework_ref (llama.cpp 无任务 API)"}), 400
+
+    with _tasks_lock:
+        if task_id in _tasks:
+            return jsonify({"error": f"task_id {task_id} already exists", "task_id": task_id}), 409
+        _tasks[task_id] = {
+            "task_id": task_id,
+            "framework": fw,
+            "model": model,
+            "state": "running",   # 简化: register 后默认 running, 调用方可传 "queued"
+            "source": (data.get("source") or "unknown"),
+            "registered_at": now,
+            "started_at": now if (data.get("state") != "queued") else None,
+            "finished_at": None,
+            "estimated_duration_sec": data.get("estimated_duration_sec"),
+            "metadata": data.get("metadata") or {},
+            "framework_ref": framework_ref,  # v1.5.0 新增
+            "auto_detect": auto_detect,        # v1.5.0 新增
+        }
+        if data.get("state") == "queued":
+            _tasks[task_id]["state"] = "queued"
+
+    audit_log("task_register", f"{fw}/{model} task_id={task_id[:8]} auto_detect={auto_detect}", "ok")
+    return jsonify({"status": "ok", "task_id": task_id, "state": _tasks[task_id]["state"], "auto_detect": auto_detect})
+
+
+@app.route("/api/task_done", methods=["POST"])
+def api_task_done():
+    """标记任务完成 (v1.4.0)
+    Body: {"task_id": "...", "status": "success|failed", "result": {...}}
+    返回: {status: "ok", task_id: "...", "state": "..."}
+    """
+    data = request.get_json(silent=True) or {}
+    task_id = (data.get("task_id") or "").strip()
+    if not task_id:
+        return jsonify({"error": "task_id is required"}), 400
+    final_status = data.get("status", "success")
+    if final_status not in ("success", "failed"):
+        return jsonify({"error": "status must be success or failed"}), 400
+
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        if not t:
+            return jsonify({"error": f"task_id {task_id} not found"}), 404
+        if t["state"] in ("done", "failed"):
+            return jsonify({"error": f"task already {t['state']}", "task_id": task_id}), 409
+        t["state"] = "done" if final_status == "success" else "failed"
+        t["finished_at"] = time.time()
+        t["result"] = data.get("result") or {}
+
+    audit_log("task_done", f"{t['framework']}/{t['model']} task_id={task_id[:8]} {final_status}", "ok")
+    return jsonify({"status": "ok", "task_id": task_id, "state": t["state"]})
+
+
+@app.route("/api/tasks", methods=["GET"])
+def api_tasks_list():
+    """列出所有任务 (含历史) - 调试用"""
+    with _tasks_lock:
+        all_tasks = list(_tasks.values())
+    return jsonify({"count": len(all_tasks), "tasks": all_tasks})
+
+
+@app.route("/api/tasks/<task_id>", methods=["GET"])
+def api_tasks_get(task_id):
+    """查询单个任务状态"""
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+    if not t:
+        return jsonify({"error": f"task_id {task_id} not found"}), 404
+    return jsonify(t)
+
+
+def _cleanup_old_tasks():
+    """清理超过 _TASK_HISTORY_MAX 的旧历史任务, 保留活跃"""
+    with _tasks_lock:
+        finished = [(tid, t) for tid, t in _tasks.items() if t["state"] in ("done", "failed")]
+        if len(finished) > _TASK_HISTORY_MAX:
+            finished.sort(key=lambda x: x[1]["finished_at"] or 0)
+            for tid, _ in finished[:len(finished) - _TASK_HISTORY_MAX]:
+                del _tasks[tid]
+
+
+# ── v1.5.0: 任务自动检测 watcher ───────────────────────────────────────
+# 目的: 不靠 timeout, 直接监测框架原生信号
+#   Ollama:   /api/ps 拿 models[], 任务模型消失 → done
+#   ComfyUI:  /history/{prompt_id}, 出现 → done (查 status_str)
+#   beellama/embedding: llama.cpp 无任务 API, 不支持自动检测, 必须手动 task_done
+#
+# task_register 时可传 framework_ref:
+#   {"prompt_id": "abc-123"}              # ComfyUI 自动检测
+#   {"detect": "model_unload"}             # Ollama: 等模型从 /api/ps 消失
+#
+# 重复 register 同一 framework_ref → 幂等
+# v1.5.0 完全 append-only: 不修改任何现有函数/路由
+
+_watcher_started = False
+_watcher_lock = threading.Lock()
+
+
+def _ensure_task_watcher():
+    """启动后台 watcher 线程 (每 2s 轮询活跃任务)"""
+    global _watcher_started
+    with _watcher_lock:
+        if _watcher_started:
+            return
+        _watcher_started = True
+    t = threading.Thread(target=_task_watcher_loop, name="task-watcher", daemon=True)
+    t.start()
+    log.info("[v1.5.0] task watcher started (interval=2s)")
+
+
+def _task_watcher_loop():
+    """后台循环: 每 2s 轮询所有活跃任务的 framework 原生信号"""
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
+    import json as _json
+
+    while True:
+        try:
+            # 收集当前活跃任务快照
+            with _tasks_lock:
+                active = [(tid, dict(t)) for tid, t in _tasks.items()
+                          if t["state"] in ("running", "queued")]
+
+            for tid, task in active:
+                fref = task.get("framework_ref") or {}
+                fw = task["framework"]
+                try:
+                    if fw == "comfyui" and "prompt_id" in fref:
+                        _check_comfyui_history(tid, task, fref["prompt_id"])
+                    elif fw == "ollama" and fref.get("detect") == "model_unload":
+                        _check_ollama_unload(tid, task)
+                except Exception as e:
+                    log.debug(f"[watcher] {tid} check error: {e}")
+
+            # 清理历史任务
+            _cleanup_old_tasks()
+        except Exception as e:
+            log.error(f"[watcher] loop error: {e}")
+
+        time.sleep(2)
+
+
+def _check_comfyui_history(task_id, task, prompt_id):
+    """ComfyUI: 查 /history/{prompt_id}, 出现则 task_done"""
+    import urllib.request as _urlreq
+    import json as _json
+
+    try:
+        url = f"http://127.0.0.1:8188/history/{prompt_id}"
+        req = _urlreq.Request(url, method="GET")
+        with _urlreq.urlopen(req, timeout=3) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return  # ComfyUI 不在跑或网络问题, 不动任务
+
+    if prompt_id not in data:
+        return  # 还没完成
+
+    # ComfyUI 完成了 → task_done
+    entry = data[prompt_id]
+    status = entry.get("status", {})
+    status_str = status.get("status_str", "unknown")
+    final_status = "success" if status_str == "success" else "failed"
+
+    # 提取输出节点 (给 result)
+    outputs = entry.get("outputs", {})
+    output_files = []
+    for node_id, out in outputs.items():
+        for img in out.get("images", []):
+            output_files.append({
+                "filename": img.get("filename"),
+                "type": "image",
+                "subfolder": img.get("subfolder", ""),
+            })
+        for vid in out.get("gifs", []):
+            output_files.append({
+                "filename": vid.get("filename"),
+                "type": "video",
+                "subfolder": vid.get("subfolder", ""),
+            })
+
+    result = {
+        "comfyui_status": status_str,
+        "comfyui_completed": status.get("completed", False),
+        "outputs": output_files,
+        "auto_detected": True,
+    }
+    if final_status == "failed":
+        # 提取错误信息
+        errs = [m for m in status.get("messages", []) if m[0] == "execution_error"]
+        if errs:
+            result["error"] = errs[0][1].get("exception_message", "")[:500]
+
+    _auto_task_done(task_id, final_status, result)
+
+
+def _check_ollama_unload(task_id, task):
+    """Ollama: /api/ps 查模型是否还在, 消失则 task_done"""
+    import urllib.request as _urlreq
+    import json as _json
+
+    model_name = task.get("model", "")
+
+    try:
+        req = _urlreq.Request("http://localhost:11434/api/ps", method="GET")
+        with _urlreq.urlopen(req, timeout=3) as resp:
+            data = _json.loads(resp.read())
+    except Exception:
+        return  # ollama 不在, 不动任务 (任务方自行处理)
+
+    models = data.get("models", [])
+    # 匹配模型名 (支持短名匹配, 如 qwen3:14b-ctx64k → qwen3:14b)
+    loaded_names = [m.get("name", "") for m in models]
+    matched = any(model_name == n or model_name in n or n in model_name for n in loaded_names)
+
+    if matched:
+        return  # 模型还在, 任务进行中
+
+    # 模型消失 → ollama 自动卸载了, 任务完成
+    _auto_task_done(task_id, "success", {
+        "ollama_unloaded": True,
+        "remaining_models": loaded_names,
+        "auto_detected": True,
+    })
+
+
+def _auto_task_done(task_id, status, result):
+    """框架信号检测到的 task_done, 不走 audit_log 避免重复"""
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        if not t or t["state"] not in ("running", "queued"):
+            return  # 已处理过
+        t["state"] = "done" if status == "success" else "failed"
+        t["finished_at"] = time.time()
+        t["result"] = result
+        t["auto_detected"] = True
+    audit_log("task_auto_done", f"{t['framework']}/{t['model']} task_id={task_id[:8]} {status}", "ok")
+    log.info(f"[v1.5.0 watcher] auto task_done: {task_id} {status} ({t['framework']}/{t['model']})")
+
+
 # ── 主程序 ───────────────────────────────────────────────────────
 if __name__ == '__main__':
     import atexit
@@ -5926,4 +6642,8 @@ if __name__ == '__main__':
     log.info(f"Framework Manager starting on port {PORT}")
     # v1.2.0: 启动推理队列 worker（append-only：仅此一行新增）
     _ensure_qrun_worker()
+    # v1.3.0: 启动 VRAM 监测线程
+    _ensure_vram_monitor()
+    # v1.5.0: 启动任务自动检测 watcher (ComfyUI history / Ollama /api/ps)
+    _ensure_task_watcher()
     app.run(host='0.0.0.0', port=PORT, threaded=True)

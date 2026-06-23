@@ -2,3 +2,5 @@ fm.log
 *.bak
 *.bak-*
 framework-manager.py.bak-v1.3.0-pre
+__pycache__/
+config/

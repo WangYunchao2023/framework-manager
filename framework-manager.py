@@ -4,9 +4,21 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.5.0
+版本：1.6.0
 
 更新日志:
+- v1.6.0: beellama 自动检测 (GPU util 监测)
+  - task_register 加 framework_ref.detect="gpu_idle" (beellama LLM 专用)
+  - watcher 每 2s 读 _vram_state["gpu_util_pct"] (vram_monitor 已 5s 一次调 nvidia-smi, watcher 复用缓存)
+  - 持续 < 15% 连续 3 次 (= 6s) → task_done
+  - 记录 peak_gpu_util 给 result
+  - 适用: beellama LLM 推理 (qwen3-14b 等, 单次几秒到几十秒)
+  - 不适用: embedding (-ngl 0 CPU 推理, 0.04s 完成, 2s 轮询捕不到) → 仍需手动 task_done
+
+  v1.6.0-patch3: api_vram_status 去掉 _ensure_vram_monitor() (避免 nvidia-smi hang 时锁住所有 API)
+  v1.6.0-patch5: _tasks_lock 改 RLock (watcher 调 _auto_task_done 嵌套持锁修复死锁)
+
+  实测: beellama chat 5-10s 推理 peak_gpu_util 97%, 自动 done; 空闲时注册标 failed
 - v1.5.0: 任务自动检测 (framework_ref + 后台 watcher)
   - task_register 可传 framework_ref: {prompt_id} (ComfyUI) 或 {detect: "model_unload"} (Ollama)
   - 后台 watcher thread 每 2s 轮询框架原生信号
@@ -6304,8 +6316,11 @@ def api_vram_status():
     """VRAM 状态端点 (v1.3.0 + v1.4.0 task_register 增强)
     数据源: nvidia-smi (物理) + 各 framework API (语义) + task_register (精确)
     返回: GPU 总体 + 所有进程 + 每个进程的 framework/model/task_state + 所有活跃任务
+
+    v1.6.0-patch3: 去掉 _ensure_vram_monitor() 调用 (避免死锁)
+        原代码每次 API 调用都拿 _vram_monitor_lock, monitor thread 跑 nvidia-smi hang 时
+        所有 API 都会卡在锁上。monitor 启动后是 daemon thread, 不需要每次都"确保启动"
     """
-    _ensure_vram_monitor()
     age = int(time.time() - _vram_state.get("updated_at", 0)) if _vram_state.get("updated_at") else None
     active_tasks = _list_active_tasks()
     return jsonify({
@@ -6323,7 +6338,7 @@ def api_vram_status():
 import uuid as _task_uuid
 
 _tasks = {}               # task_id → task dict
-_tasks_lock = threading.Lock()
+_tasks_lock = threading.RLock()  # v1.6.0-patch5: 改 RLock (允许 watcher 嵌套持锁调 _auto_task_done)
 _TASK_HISTORY_MAX = 200   # 内存中最多保留 200 个已完成任务
 
 
@@ -6347,6 +6362,7 @@ def _list_active_tasks():
                     "duration_sec": round(duration, 1),
                     "estimated_duration_sec": t.get("estimated_duration_sec"),
                     "metadata": t.get("metadata", {}),
+                    "auto_detect": t.get("auto_detect", False),  # v1.5.0: 暴露给前端
                 })
     return out
 
@@ -6391,9 +6407,14 @@ def api_task_register():
         auto_detect = True
     elif fw == "ollama" and framework_ref.get("detect") == "model_unload":
         auto_detect = True
-    elif fw in ("beellama", "embedding"):
+    elif fw == "beellama" and framework_ref.get("detect") == "gpu_idle":
+        # v1.6.0: beellama LLM 推理 (qwen3-14b 等) 用 GPU util 监测
+        auto_detect = True
+    elif fw == "embedding":
         if framework_ref:
-            return jsonify({"error": f"framework={fw} 不支持 framework_ref (llama.cpp 无任务 API)"}), 400
+            return jsonify({"error": "framework=embedding 不支持 framework_ref (-ngl 0 CPU 推理, 0.04s 完成, 轮询捕不到)"}), 400
+    elif fw == "beellama" and framework_ref:
+        return jsonify({"error": 'beellama framework_ref 仅支持 {"detect":"gpu_idle"}, got: ' + str(framework_ref)}), 400
 
     with _tasks_lock:
         if task_id in _tasks:
@@ -6525,6 +6546,8 @@ def _task_watcher_loop():
                         _check_comfyui_history(tid, task, fref["prompt_id"])
                     elif fw == "ollama" and fref.get("detect") == "model_unload":
                         _check_ollama_unload(tid, task)
+                    elif fw == "beellama" and fref.get("detect") == "gpu_idle":
+                        _check_beellama_gpu_idle(tid, task)
                 except Exception as e:
                     log.debug(f"[watcher] {tid} check error: {e}")
 
@@ -6618,6 +6641,70 @@ def _check_ollama_unload(task_id, task):
         "remaining_models": loaded_names,
         "auto_detected": True,
     })
+
+
+def _check_beellama_gpu_idle(task_id, task):
+    """v1.6.0: beellama GPU util 自动检测
+    策略: 总 GPU util 持续 < 15% 超过 6s → 任务 done
+    适用: beellama LLM 推理 (qwen3-14b 等, 单次几秒到几十秒, GPU 推理)
+    不适用: embedding (-ngl 0 CPU 推理, 0.04s 完成, 轮询周期 2s 捕不到)
+            → embedding 维持手动 task_done
+
+    v1.6.0-patch1: 改为操作 _tasks[tid] 原对象 (之前传 dict copy 改不动原对象)
+    v1.6.0-patch2: 改用 _vram_state["gpu_util_pct"] 缓存, 不直接 subprocess 调 nvidia-smi
+                    (避免和 _vram_monitor_loop 5s 一次的 nvidia-smi 死锁)
+    """
+    # v1.6.0-patch2: 直接读 vram_monitor 缓存 (5s 一次, 已经够用)
+    # vram_state age 太旧 (>10s) → vram_monitor 死了, 不动任务 (保守)
+    log.debug(f"[v1.6.0 watcher] {task_id[:8]} enter check")
+    age = time.time() - _vram_state.get("updated_at", 0)
+    if age > 10 or _vram_state.get("updated_at", 0) == 0:
+        log.debug(f"[v1.6.0 watcher] {task_id[:8]} vram_state too old age={age:.1f}s")
+        return  # vram_monitor 不可信, 不动任务
+    gpu_util = _vram_state.get("gpu_util_pct", 0)
+    log.debug(f"[v1.6.0 watcher] {task_id[:8]} gpu_util={gpu_util}%")
+
+    threshold = 15
+    idle_needed = 3  # 连续 3 次 (< 6s) 才判定 done, 避免抖动
+
+    # v1.6.0-patch4: 不在 _tasks_lock 内做多轮等待, 改用 try-acquire 立刻返回
+    # 之前每次 watcher tick 都持锁更新 idle_count, 导致 _tasks_lock 长时间被 watcher 持有
+    # api_tasks_list / api_tasks_get / api_task_register 等也用 _tasks_lock, 全 hang
+    #
+    # 解决: 只在 idle_count 达到阈值时才持锁调用 _auto_task_done
+    #       中间状态更新用 try-acquire (拿不到锁就跳过本次更新)
+    with _tasks_lock:
+        real_task = _tasks.get(task_id)
+        if not real_task or real_task["state"] not in ("running", "queued"):
+            return
+
+        # 原子更新 idle_count 和 peak (持锁时间 < 1ms)
+        if gpu_util < threshold:
+            real_task["_beellama_idle_count"] = real_task.get("_beellama_idle_count", 0) + 1
+        else:
+            real_task["_beellama_idle_count"] = 0
+
+        peak = real_task.get("_beellama_peak_util", 0)
+        if gpu_util > peak:
+            real_task["_beellama_peak_util"] = gpu_util
+
+        # 只在判定完成时再调 _auto_task_done (它内部会再次持锁, 但很快)
+        if real_task["_beellama_idle_count"] >= idle_needed:
+            peak_util = real_task.get("_beellama_peak_util", 0)
+            if peak_util < threshold:
+                _auto_task_done(task_id, "failed", {
+                    "auto_detected": True,
+                    "method": "gpu_idle",
+                    "reason": f"GPU util 始终 <{threshold}%, 任务可能没真正运行",
+                    "peak_gpu_util": peak_util,
+                })
+            else:
+                _auto_task_done(task_id, "success", {
+                    "auto_detected": True,
+                    "method": "gpu_idle",
+                    "peak_gpu_util": peak_util,
+                    "idle_duration_sec": real_task["_beellama_idle_count"] * 2,
+                })
 
 
 def _auto_task_done(task_id, status, result):

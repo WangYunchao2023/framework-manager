@@ -388,3 +388,25 @@
 [2026-06-23 17:55:08] task_register        | comfyui/EmptyImage task_id=v15-mixe auto_detect=True | ok
 [2026-06-23 17:55:10] task_auto_done       | comfyui/EmptyImage task_id=v15-mixe success        | ok
 [2026-06-23 17:55:49] task_done            | beellama/qwen3-14b task_id=v15-mixe failed         | ok
+[2026-06-23 18:13:51] task_register        | beellama/qwen3-14b task_id=check-ma auto_detect=False | ok
+[2026-06-23 18:13:51] task_register        | comfyui/EmptyImage task_id=check-au auto_detect=True | ok
+[2026-06-23 18:13:54] task_done            | beellama/qwen3-14b task_id=check-ma failed         | ok
+[2026-06-23 18:14:58] task_register        | beellama/qwen3-14b task_id=verify-f auto_detect=False | ok
+[2026-06-23 18:14:59] task_done            | beellama/qwen3-14b task_id=verify-f failed         | ok
+[2026-06-23 18:20:42] 切换框架                 | → beellama                                         | ok
+[2026-06-23 21:38:42] 切换框架                 | → beellama                                         | ok
+[2026-06-23 21:38:57] 加载模型                 | beellama/qwen3-14b                                 | ok
+[2026-06-23 21:42:52] task_register        | beellama/qwen3-14b task_id=v16-bee- auto_detect=True | ok
+[2026-06-23 21:43:43] task_register        | beellama/qwen3-14b task_id=v16-test auto_detect=True | ok
+[2026-06-23 21:45:17] task_register        | beellama/qwen3-14b task_id=v16-bee2 auto_detect=True | ok
+[2026-06-23 21:47:10] task_register        | beellama/qwen3-14b task_id=v16-bee3 auto_detect=True | ok
+[2026-06-23 21:53:17] task_register        | beellama/qwen3-14b task_id=v16-fina auto_detect=True | ok
+[2026-06-23 21:58:10] task_register        | beellama/qwen3-14b task_id=v16-p2-1 auto_detect=True | ok
+[2026-06-23 21:59:51] task_register        | beellama/qwen3-14b task_id=v16-p3-1 auto_detect=True | ok
+[2026-06-23 22:05:51] task_register        | beellama/qwen3-14b task_id=v16-nore auto_detect=True | ok
+[2026-06-23 22:07:47] task_register        | beellama/qwen3-14b task_id=dbg-1782 auto_detect=True | ok
+[2026-06-23 22:11:37] task_register        | beellama/qwen3-14b task_id=check-p3 auto_detect=True | ok
+[2026-06-23 22:14:36] task_register        | beellama/qwen3-14b task_id=v16-fina auto_detect=True | ok
+[2026-06-23 22:14:42] task_auto_done       | beellama/qwen3-14b task_id=v16-fina failed         | ok
+[2026-06-23 22:15:06] task_register        | beellama/qwen3-14b task_id=v16-real auto_detect=True | ok
+[2026-06-23 22:15:18] task_auto_done       | beellama/qwen3-14b task_id=v16-real success        | ok

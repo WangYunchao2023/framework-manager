@@ -1,5 +1,38 @@
 # framework-manager 版本历史
 
+## v1.6.2-patch4 (2026-06-24)
+
+### 🎨 重构：默认设置下拉复用主下拉数据源
+
+**背景**：
+- 默认设置卡和主下拉独立拉 `/api/models_by_framework`, 两处数据各走各的
+- 隐藏模型仅过滤主下拉, 默认设置下拉还是显示已隐藏的
+- ingest 后需手动调 `loadDefaultSettings` 同步 (patch3 临时修复)
+- 跟随问题: 两处各自维护, UX 容易出现不一致
+
+**设计**：
+- 主下拉 = 唯一数据源（`/api/status` 的 `available_models`）
+- 默认设置下拉 = 复用主下拉（不独立拉 API）
+- 例外: 「默认框架」 != 「当前框架」 时才独立拉 (覆盖"空闲后回退到其他框架"场景)
+
+**实现**：
+- `/api/status` 返 `available_display_names` 字段（后端调 `_extract_short_model_name`）
+- `updateModelSelect()` 加 `displayNames` 参数，顺便调 `syncDefaultModelSelect` 同步
+- `syncDefaultModelSelect(models, displayNames, selectedModel)` 新函数
+- `loadDefaultSettings()` / 「默认框架」change：仅当 `defaultFw !== currentFramework` 时拉 API
+
+**顺手修复**：
+- `ingest` 成功后清 beellama 缓存（`force_refresh=False` 在 30s 内会返旧列表）
+- ingest 后 `/api/status` 立即反映新模型
+
+**验证**：
+- ingest 前：5 个模型原状
+- ingest 立即后：6 个，新模型出现 ✅
+- 清理后：5 个原状 ✅
+- 主下拉隐藏后, 默认设置下拉也不可见 ✅（同源数据）
+
+---
+
 ## v1.6.2-patch3 (2026-06-24)
 
 ### 🐛 修复: 默认设置卡下拉两个 qwen3.6 显示相同 + ingest 后下拉不刷新

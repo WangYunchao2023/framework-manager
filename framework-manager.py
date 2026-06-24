@@ -4,9 +4,19 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.2-patch3
+版本：1.6.2-patch4
 
 更新日志:
+- v1.6.2-patch4: 默认设置下拉复用主下拉数据源 (统一/避免两处维护)
+  - 背景: 默认设置卡和主下拉独立拉 /api/models_by_framework, 两处数据各走各的
+    - 隐藏模型仅过滤主下拉, 默认设置下拉还是显示已隐藏的
+    - ingest 后仅 patch3 手动调 loadDefaultSettings 同步
+  - 修复: 默认设置下拉直接从主下拉拿数据 (不独立拉 API)
+    - /api/status 返 available_display_names (后端 _extract_short_model_name)
+    - updateModelSelect 顺便调 syncDefaultModelSelect 同步
+    - loadDefaultSettings 仍独立拉 (仅当默认框架 != 当前框架, 覆盖"空闲回退到其他框架"场景)
+    - 默认框架 select change 同样只在需要时拉
+  - 顺手: ingest 成功后清 beellama 缓存, 避免 30s 内 /api/status 仍返旧
 - v1.6.2-patch3: 修复默认设置卡下拉两个 qwen3.6 显示相同 + ingest 后下拉不刷新
   - 背景: updateDefaultModelSelect 用硬编码 if/elif 猜 short_name:
     `if (displayName.includes('qwen3.6')) displayName = 'qwen3.6-q3';`
@@ -1924,6 +1934,11 @@ def api_status():
     vram_total_mb = total * 1024
     vram_percent = int((used / total) * 100) if total > 0 else 0
     models = get_framework_models(current_framework, force_refresh=False) if current_framework else []
+    # v1.6.2-patch4: 顺便返回 short_name, 让「默认设置」下拉可直接复用同一份数据
+    if current_framework == "beellama":
+        available_display_names = [_extract_short_model_name(m) for m in models]
+    else:
+        available_display_names = list(models)
     queue_info = get_queue_info()
     return jsonify({
         "framework": framework_display,
@@ -1934,6 +1949,7 @@ def api_status():
         "vram_percent": vram_percent,
         "framework_key": current_framework or "—",
         "available_models": models[:10],
+        "available_display_names": available_display_names[:10],
         "last_activity": int(time.time() - last_activity_time),
         "queue": queue_info
     })
@@ -3363,6 +3379,10 @@ def _ingest_beellama():
 
     返回: {scanned, linked, skipped, errors, registered: [{gguf, short, dir, target}]}
     """
+    global _model_cache, _cache_timestamps
+    # v1.6.2-patch4: 清 beellama 缓存, 避免 ingest 后 30s 内 /api/status 仍返旧列表
+    _model_cache["beellama"] = None
+    _cache_timestamps["beellama"] = 0
     blobs_dir = Path(OLLAMA_MODELS_DIR) / "blobs"
     home_models = Path.home() / "models"
     if not blobs_dir.exists():
@@ -4499,7 +4519,7 @@ async function refresh() {
     // VRAM 刷新逻辑见 refreshVram() 函数 + setInterval 每 5s 调用
     if (typeof refreshVram === 'function') refreshVram();
     // 状态轮询不写日志，避免刷屏
-    updateModelSelect(data.available_models);
+    updateModelSelect(data.available_models, data.available_display_names);
   } catch (e) {
     log('刷新失败：' + e.message, 'error');
   }
@@ -4620,15 +4640,18 @@ async function refreshVram() {
 // 首次加载 + 每 5s 刷新
 refreshVram();
 setInterval(refreshVram, 5000);
-function updateModelSelect(models) {
+function updateModelSelect(models, displayNames) {
+  // v1.6.2-patch4: displayNames 由后端 _extract_short_model_name 提供 (beellama)
+  // 主下拉仍显示完整路径 (与历史一致), 但顺便同步到「默认设置」下拉
   var sel = document.getElementById('model-select');
   var prevValue = sel.value;  // 保存用户当前选中的值
   sel.innerHTML = '<option value="">— 加载模型到当前框架 —</option>';
-  models.forEach(function(m) {
+  models.forEach(function(m, i) {
     var opt = document.createElement('option');
     opt.value = m;
     opt.textContent = m + '  🗑';
     opt.dataset.modelPath = m;
+    opt.dataset.shortName = (displayNames && displayNames[i]) || '';
     sel.appendChild(opt);
   });
   // 恢复之前选中的值（如果新列表里还有的话）
@@ -4637,6 +4660,8 @@ function updateModelSelect(models) {
   }
   // 同步隐藏区状态
   loadHiddenModels();
+  // v1.6.2-patch4: 同步「默认设置」下拉, 复用同一份数据 (避免两处维护)
+  syncDefaultModelSelect(models, displayNames || []);
 }
 
 // v1.1.7-patch5: removeModelFromList 函数已删除 (功能被「➕ 添加/移除模型」模态框覆盖)
@@ -4969,14 +4994,27 @@ async function loadModel() {
 document.addEventListener('DOMContentLoaded', function() {
   var fwSelect = document.getElementById('default-framework-select');
   fwSelect.addEventListener('change', function() {
-    var fw = this.value;
-    fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(fw))
-      .then(function(r) {
-        updateDefaultModelSelect(r.models || [], r.display_names || [], document.getElementById('default-model-select').value);
-      })
-      .catch(function(e) {
-        log('获取框架模型列表失败：' + e.message, 'error');
-      });
+    // v1.6.2-patch4: 根据默认框架加载对应下拉
+    // - 默认框架 == 当前框架: 复用主下拉 (避免两处维护)
+    // - 默认框架 != 当前框架: 独立拉 (覆盖 "空闲后回退到其他框架" 场景)
+    var newFw = this.value;
+    window.currentDefaultModel = '';
+    if (newFw === currentFramework) {
+      // 复用主下拉: 只清选中, 等待 updateModelSelect 同步
+      var sel = document.getElementById('default-model-select');
+      if (sel) sel.value = '';
+      log('已切换默认框架: ' + newFw + ' (复用主下拉)', 'info');
+    } else {
+      // 独立拉
+      fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(newFw))
+        .then(function(r) {
+          syncDefaultModelSelect(r.models || [], r.display_names || [], '');
+          log('已加载默认框架 ' + newFw + ' 的模型列表 (独立拉)', 'info');
+        })
+        .catch(function(e) {
+          log('获取默认框架模型列表失败：' + e.message, 'error');
+        });
+    }
   });
   // 页面加载时自动加载默认设置
   loadDefaultSettings();
@@ -4990,13 +5028,19 @@ async function loadDefaultSettings() {
     var config = resp.config || resp;
     var defaultFw = config.default_framework || 'beellama';
     document.getElementById('default-framework-select').value = defaultFw;
-    document.getElementById('default-model-select').value = config.default_model || '';
     document.getElementById('idle-timeout-input').value = config.idle_timeout || 300;
-    
-    // 根据默认框架获取模型列表
-    var modelsResp = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(defaultFw));
-    updateDefaultModelSelect(modelsResp.models || [], modelsResp.display_names || [], config.default_model || '');
-    
+    // v1.6.2-patch4: 复用主下拉数据 (仅当默认框架 == 当前框架, 避免主下拉下拉不同步)
+    window.currentDefaultModel = config.default_model || '';
+    if (defaultFw === currentFramework) {
+      // 复用主下拉 (由 updateModelSelect 同步), 只更新选中
+      var sel = document.getElementById('default-model-select');
+      if (sel && window.currentDefaultModel) sel.value = window.currentDefaultModel;
+    } else {
+      // 默认框架 != 当前框架, 独立拉 (覆盖如 "现在用 beellama, 空闲后回退到 ollama" 场景)
+      var modelsResp = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(defaultFw));
+      syncDefaultModelSelect(modelsResp.models || [], modelsResp.display_names || [], config.default_model || '');
+    }
+
     log('默认设置已加载：框架=' + defaultFw + ' 模型=' + (config.default_model||'无') + ' 超时=' + (config.idle_timeout||300) + 's');
   } catch (e) {
     log('加载设置失败：' + e.message, 'error');
@@ -5006,16 +5050,34 @@ async function loadDefaultSettings() {
 }
 
 function updateDefaultModelSelect(models, displayNames, selectedModel) {
-  // v1.6.2-patch3: displayNames 由后端 _extract_short_model_name 提供, 保证与 per-model / wrapper 一致
+  // v1.6.2-patch3: displayNames 由后端 _extract_short_model_name 提供
+  // v1.6.2-patch4: 该函数已废弃, 逻辑被 syncDefaultModelSelect 替代 (复用主下拉数据)
+  // 保留为勾子函数防止被使用, 内部走 syncDefaultModelSelect
+  syncDefaultModelSelect(models, displayNames, selectedModel);
+}
+
+// v1.6.2-patch4: 「默认模型」下拉从主下拉同步, 不再独立拉 API
+function syncDefaultModelSelect(models, displayNames, selectedModel) {
+  // 入参: models=主下拉可用模型列表, displayNames=后端给的 short_name
+  // 如果 selectedModel 未传, 从主下拉当前选中读 (保留用户选择)
   var sel = document.getElementById('default-model-select');
+  if (!sel) return;
   sel.innerHTML = '<option value="">(无)</option>';
   (models || []).forEach(function(m, i) {
     var opt = document.createElement('option');
     opt.value = m;
     opt.textContent = (displayNames && displayNames[i]) || m;
-    if (m === selectedModel) opt.selected = true;
     sel.appendChild(opt);
   });
+  // 恢复选中: 优先用 selectedModel 参数, 其次读全局 currentDefaultModel
+  if (selectedModel === undefined) {
+    selectedModel = window.currentDefaultModel || '';
+  } else {
+    window.currentDefaultModel = selectedModel;
+  }
+  if (selectedModel) {
+    sel.value = selectedModel;
+  }
 }
 
 async function saveDefaultSettings() {

@@ -1,5 +1,27 @@
 # framework-manager 版本历史
 
+## v1.6.2-patch3 (2026-06-24)
+
+### 🐛 修复: 默认设置卡下拉两个 qwen3.6 显示相同 + ingest 后下拉不刷新
+
+**Bug 1: 两个 qwen3.6 显示相同**
+- 原因: 前端 `updateDefaultModelSelect` 用硬编码 if/elif 推断 short_name:
+  ```js
+  if (displayName.includes('qwen3.6')) displayName = 'qwen3.6-q3';
+  ```
+  导致 `qwen3.6-35b` 和 `qwen3.6-35b-uncensored` 都显示成 `qwen3.6-q3`
+- 修复: `/api/models_by_framework` 新增 `display_names` 字段, 调用后端 `_extract_short_model_name()`
+  保证与 wrapper / per-model / defaults 完全一致
+- 验证: display_names = [gemma-4-26b, qwen3-14b, qwen3-vl, qwen3.6-uncensored, qwen3.6-q3]
+
+**Bug 2: ingest 后新模型不出现默认设置下拉**
+- 原因: `ingestBeellama()` 成功后调 `setTimeout(refresh, 1000)` 刷新主状态,
+  但 `refresh()` 不同步 `default-model-select` 下拉 (该下拉只在 DOMContentLoaded / 框架切换时刷新)
+- 修复: ingest 成功后额外调 `loadDefaultSettings()`
+- 验证: 模拟 `Qwen3.6-35B-A3B-Uncensored-DefaultTest1-Q4_K_M.gguf` → ingest → display_names 从 5 变 6
+
+---
+
 ## v1.6.2-patch2 (2026-06-24)
 
 ### 🎨 UI 重构：beellama 默认值卡拆分（统一默认 vs 当前模型默认）

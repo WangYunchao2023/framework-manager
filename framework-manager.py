@@ -4,9 +4,17 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.2-patch2
+版本：1.6.2-patch3
 
 更新日志:
+- v1.6.2-patch3: 修复默认设置卡下拉两个 qwen3.6 显示相同 + ingest 后下拉不刷新
+  - 背景: updateDefaultModelSelect 用硬编码 if/elif 猜 short_name:
+    `if (displayName.includes('qwen3.6')) displayName = 'qwen3.6-q3';`
+    导致 qwen3.6-35b 和 qwen3.6-35b-uncensored 都显示成 qwen3.6-q3
+  - 修复: /api/models_by_framework 新增 display_names 字段
+    (调用后端 _extract_short_model_name, 与 wrapper / per-model / defaults 完全一致)
+  - 顺手修复: ingest 成功后调 loadDefaultSettings(), 新注册的模型自动出现在默认设置下拉
+    (原来只 refresh() 不刷新默认设置卡)
 - v1.6.2-patch2: beellama 端默认值卡拆分 (统一默认 + 当前模型默认)
   - 背景: 原 defaults-card 同时包含 "统一默认 (_fallback)" 和 "当前模型默认值" 两块,
     只有一个保存按钮, 用户反馈不够清晰: 不清保存是改全局还是仅改当前模型
@@ -3667,12 +3675,19 @@ def api_refresh_models():
 
 @app.route("/api/models_by_framework")
 def api_models_by_framework():
-    """获取指定框架的模型列表（独立于当前框架）"""
+    """获取指定框架的模型列表（独立于当前框架）
+    v1.6.2-patch3: 返回 display_names 字段 (short_name), 解决「默认设置卡下拉两个 qwen3.6 显示相同」bug
+    """
     fw = request.args.get("framework", "beellama")
     if fw not in ["ollama", "beellama", "comfyui"]:
         return jsonify({"error": "无效的框架"}), 400
     models = get_framework_models(fw, force_refresh=True)
-    return jsonify({"framework": fw, "models": models})
+    # beellama 返回的是完整相对路径 (dir/basename), 需要 short_name 给下拉显示
+    if fw == "beellama":
+        display_names = [_extract_short_model_name(m) for m in models]
+    else:
+        display_names = list(models)  # ollama/comfyui 已是 short_name
+    return jsonify({"framework": fw, "models": models, "display_names": display_names})
 
 @app.route("/api/audit_logs")
 def api_audit_logs():
@@ -4957,7 +4972,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var fw = this.value;
     fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(fw))
       .then(function(r) {
-        updateDefaultModelSelect(r.models || [], document.getElementById('default-model-select').value);
+        updateDefaultModelSelect(r.models || [], r.display_names || [], document.getElementById('default-model-select').value);
       })
       .catch(function(e) {
         log('获取框架模型列表失败：' + e.message, 'error');
@@ -4980,7 +4995,7 @@ async function loadDefaultSettings() {
     
     // 根据默认框架获取模型列表
     var modelsResp = await fetchJSON('/api/models_by_framework?framework=' + encodeURIComponent(defaultFw));
-    updateDefaultModelSelect(modelsResp.models || [], config.default_model || '');
+    updateDefaultModelSelect(modelsResp.models || [], modelsResp.display_names || [], config.default_model || '');
     
     log('默认设置已加载：框架=' + defaultFw + ' 模型=' + (config.default_model||'无') + ' 超时=' + (config.idle_timeout||300) + 's');
   } catch (e) {
@@ -4990,21 +5005,14 @@ async function loadDefaultSettings() {
   loadDefaults();
 }
 
-function updateDefaultModelSelect(models, selectedModel) {
+function updateDefaultModelSelect(models, displayNames, selectedModel) {
+  // v1.6.2-patch3: displayNames 由后端 _extract_short_model_name 提供, 保证与 per-model / wrapper 一致
   var sel = document.getElementById('default-model-select');
   sel.innerHTML = '<option value="">(无)</option>';
-  (models || []).forEach(function(m) {
+  (models || []).forEach(function(m, i) {
     var opt = document.createElement('option');
     opt.value = m;
-    // 对于 beellama 模型，显示短名称
-    var displayName = m;
-    if (m.includes('/')) {
-      displayName = m.split('/')[0];
-      if (displayName.includes('gemma')) displayName = 'gemma4';
-      if (displayName.includes('qwen3.6')) displayName = 'qwen3.6-q3';
-      if (displayName.includes('qwen3-vl')) displayName = 'qwen3-vl';
-    }
-    opt.textContent = displayName;
+    opt.textContent = (displayNames && displayNames[i]) || m;
     if (m === selectedModel) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -5445,6 +5453,8 @@ async function ingestBeellama() {
     setTimeout(function() { showLoadStatus(false); }, 3000);
     // 重新拉取模型列表
     setTimeout(refresh, 1000);
+    // v1.6.2-patch3: 同时刷新默认设置卡的下拉列表 (使新注册的模型可见)
+    if (typeof loadDefaultSettings === 'function') loadDefaultSettings();
   } catch (e) {
     resultDiv.innerHTML = '<span style="color:#f88;">❌ 错误: ' + e.message + '</span>';
     updateLoadStatusUI({ status: 'error', message: '❌ ' + e.message, progress: 100, elapsed_seconds: 1 });

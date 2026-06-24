@@ -4,9 +4,15 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.0
+版本：1.6.1
 
 更新日志:
+- v1.6.1: 修复 _try_infer_beellama() 硬编码 if/elif 链把所有 qwen3.6 GGUF 都识别为 'qwen3.6-q3'
+  - Bug 复现: 加载 qwen3.6-35b-uncensored (GGUF basename 含 Uncensored) 后, /api/status 仍显示 model='qwen3.6-q3'
+  - 根因: detect_current_framework() → _try_infer_beellama() 第 1358-1364 行用 'qwen3.6' in filename.lower() 一刀切, uncensored 版被误判成 q3 版
+  - 修复: 复用第 2034 行已有的 _extract_short_model_name(gguf_path), 统一由 regex 决定 short_name
+  - 验证 5 种典型 GGUF basename → qwen3.6-uncensored / qwen3.6-q3 / qwen3-14b / qwen3-vl / gemma-4-26b (全部命中)
+  - 顺带把硬编码的 'gemma4' alias 改成 'gemma-4-26b' (与 alias_map 对齐)
 - v1.6.0: beellama 自动检测 (GPU util 监测)
   - task_register 加 framework_ref.detect="gpu_idle" (beellama LLM 专用)
   - watcher 每 2s 读 _vram_state["gpu_util_pct"] (vram_monitor 已 5s 一次调 nvidia-smi, watcher 复用缓存)
@@ -1350,20 +1356,10 @@ def detect_current_framework():
             mm = re.search(r'-m\s+(\S+)', cmdline)
             if mm:
                 gguf_path = mm.group(1)
-                gguf_filename = os.path.basename(gguf_path)
-                if 'qwen3-14b' in gguf_filename.lower():
-                    model_name = 'qwen3-14b'
-                elif 'qwen3.6' in gguf_filename.lower() or 'qwen3.6-35b' in gguf_filename:
-                    model_name = 'qwen3.6-q3'
-                elif 'gemma-4-26b' in gguf_filename.lower() or 'gemma4' in gguf_filename.lower():
-                    model_name = 'gemma4'
-                elif 'qwen3-vl' in gguf_filename.lower():
-                    model_name = 'qwen3-vl'
-                else:
-                    raw_name = os.path.splitext(gguf_filename)[0]
-                    if len(raw_name) > 25:
-                        raw_name = raw_name[:25] + '...'
-                    model_name = raw_name
+                # v1.6.1: 复用 _extract_short_model_name(), 之前硬编码 if/elif 链把
+                # 'qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-...gguf' 也识别成
+                # 'qwen3.6-q3', 导致加载 uncensored 后 /api/status 错显 'qwen3.6-q3'
+                model_name = _extract_short_model_name(gguf_path)
 
         return model_name, infer_ok
 

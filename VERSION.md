@@ -1,5 +1,46 @@
 # framework-manager 版本历史
 
+## v1.6.1 (2026-06-24)
+
+### 🐛 修复：beellama 加载 qwen3.6-uncensored 后状态显示为 qwen3.6-q3
+
+**症状**：
+- beellama 框架下，加载 `qwen3.6-35b-uncensored/Qwen3.6-35B-A3B-Uncensored-...gguf` 成功后
+- `/api/status` 返回 `model: "qwen3.6-q3"`，无法区分当前是 q3 还是 uncensored
+
+**根因**：
+- `detect_current_framework() → _try_infer_beellama()` 第 1358-1364 行硬编码 if/elif 链
+- `'qwen3.6' in gguf_filename.lower()` 一刀切匹配，q3 和 uncensored 都返回 `qwen3.6-q3`
+- 同时把 `gemma-4-26b` 错误地硬编码为 `gemma4`（与 alias_map 不一致）
+
+**修复**：
+- 复用第 2034 行已有的 `_extract_short_model_name(gguf_path)` 函数
+- 5 种典型 GGUF basename 单测全部命中：
+  - `Qwen3.6-35B-A3B-Uncensored-...gguf` → `qwen3.6-uncensored` ✅
+  - `Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf` → `qwen3.6-q3` ✅
+  - `qwen3-14b-q4.gguf` → `qwen3-14b` ✅
+  - `qwen3-vl-8b.gguf` → `qwen3-vl` ✅
+  - `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` → `gemma-4-26b` ✅（修正 gemma4 别名）
+
+**关联修复**：用户还报告了 beellama 扫描找不到非 uncensored qwen3.6-q3
+- 根因：`~/models/qwen3.6-35b/Qwen_Qwen3.6-35B-A3B-Q3_K_M.gguf` 是死链，指向已被 ollama 删除的 blob `sha256-6159deaf...`
+- 修复：删除死链，建立软链接指向 ollama 现有的真实 blob `sha256-17350b13...` (Bartowski Q3_K_M 17.18GB)
+- 跨文件系统（`/home` vs `/data`）无法硬链接，改用软链接；`is_file()` 会跟随软链接，所以扫描和加载都能正常工作
+- 不动 ollama 一侧
+
+### 验证
+- ✅ 单测 5 种 GGUF basename → 5 个 short_name 全部正确
+- ✅ `/api/scan_for_addition?framework=beellama` → 5 个模型（修复前 4 个）
+- ✅ `/api/status` 重启后立即反映：`model: "qwen3.6-uncensored"`（修复前 `qwen3.6-q3`）
+
+---
+
+## v1.6.0 (2026-06-23)
+
+beellama GPU util 自动检测 + 死锁修复。
+
+---
+
 ## v1.2.2 (2026-06-23)
 
 ### 🆕 新增：OpenAI 兼容端点

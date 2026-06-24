@@ -4,9 +4,20 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.2
+版本：1.6.2-patch1
 
 更新日志:
+- v1.6.2-patch1: beellama ingest 补全 per-model + defaults 初始化
+  - 背景: v1.6.2 只建软链, 加载时 beellama-wrapper 会报 "缺少 per-model 配置 (ctx_size/parallel/ngpu_layers)"
+  - 修复: 新增 _init_per_model_for_ingest(short_name), ingest 建软链后自动调
+    - 从 _load_defaults 读 _fallback (现成 131072/2/99)
+    - defaults.models[short_name] 补齐 (已存在不覆盖)
+    - framework-manager.json 的 framework_params.beellama.models[short_name] 补齐 (已存在不覆盖)
+  - 与既有 api_init_model_with_fallback 区别:
+    - init_model_with_fallback: 加载时被动调, 弹模态框需用户确认 + 重启 beellama
+    - _init_per_model_for_ingest: ingest 时主动调, 静默 + 不重启
+  - ingest 返回 linked[].per_model = {created, ctx_size, parallel, ngpu_layers}
+  - 已存在不覆盖用户手动调过的值 (eg. qwen3.6-uncensored 之前是 131072/1/99, 二次 ingest 不变)
 - v1.6.2: beellama 端「📥 自动注册下载的模型」功能
   - 背景: 已有 ollama 端 /api/ingest_gguf (v1.1.18) 可在 /data/ollama/models/blobs/ 扫用户下载的 .gguf
     自动生成 ollama manifest。beellama 端缺同等能力, 用户下载新模型后, 只能手动 ln -s 到 ~/models/
@@ -3226,6 +3237,64 @@ def _ingest_gguf():
     }
 
 
+def _init_per_model_for_ingest(short_name):
+    """v1.6.2-patch1: beellama ingest 时调, 为新 short_name 写 per-model + defaults
+
+    逻辑:
+    - 读 _load_defaults 拿 _fallback
+    - defaults.models[short_name] 不存在则创建 (用 _fallback 复制)
+    - per-model (framework-manager.json 的 framework_params.beellama.models) 不存在则创建
+    - 已存在则跳过, 不覆盖用户手动调过的值
+
+    返回: {"created": bool, "ctx_size": N, "parallel": N, "ngpu_layers": N} 或 {"error": str}
+    """
+    try:
+        defaults = _load_defaults()
+        _fallback = defaults.get("_fallback", {})
+        if not all(k in _fallback for k in ("ctx_size", "parallel", "ngpu_layers")):
+            return {"error": f"defaults _fallback 缺字段: {list(_fallback)}"}
+
+        # 1) defaults.models[short_name] 补齐 (已存在不覆盖)
+        models_def = defaults.setdefault("models", {})
+        created_in_defaults = False
+        if short_name not in models_def:
+            models_def[short_name] = _fallback.copy()
+            created_in_defaults = True
+
+        # 2) per-model 补齐 (已存在不覆盖)
+        config = load_config()
+        models_cfg = (
+            config
+            .setdefault("framework_params", {})
+            .setdefault("beellama", {})
+            .setdefault("models", {})
+        )
+        created_in_per_model = False
+        if short_name not in models_cfg:
+            models_cfg[short_name] = {
+                "ctx_size": models_def[short_name].get("ctx_size"),
+                "parallel": models_def[short_name].get("parallel"),
+                "ngpu_layers": models_def[short_name].get("ngpu_layers"),
+            }
+            created_in_per_model = True
+
+        # 3. 只在新建时落盘 (避免 ingest 幂等调用反复写文件)
+        if created_in_defaults:
+            if not _save_defaults(defaults):
+                return {"error": "写 defaults.json 失败"}
+        if created_in_per_model:
+            save_config(config)
+
+        return {
+            "created": created_in_defaults or created_in_per_model,
+            "ctx_size": models_def[short_name].get("ctx_size"),
+            "parallel": models_def[short_name].get("parallel"),
+            "ngpu_layers": models_def[short_name].get("ngpu_layers"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _ingest_beellama():
     """v1.6.2: 扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf 文件 (用户下载的),
     为 beellama 框架在 ~/models/<dir>/ 下建立软链接 → ollama blob.
@@ -3346,6 +3415,15 @@ def _ingest_beellama():
                 _ = mmproj_src  # suppress unused
 
             size = sha_blob.stat().st_size if sha_blob.exists() else src.stat().st_size
+
+            # 8. v1.6.2-patch1: 自动写 per-model 字典 + defaults (避免加载时报"缺 per-model 配置")
+            # 逻辑: 从 _load_defaults 读 _fallback, 为该 short_name 初始化 defaults + per-model
+            # 已存在则跳过 (不覆盖用户手动调过的值)
+            init_status = _init_per_model_for_ingest(short_name)
+            if init_status.get("error"):
+                # 初始化失败不阻断软链 (用户后续可在 WebUI 手动填)
+                init_status = {"warning": init_status["error"]}
+
             linked.append({
                 "src": src_name,
                 "short": short_name,
@@ -3354,9 +3432,10 @@ def _ingest_beellama():
                 "link": str(target_link),
                 "size": size,
                 "sha": sha[:12],
+                "per_model": init_status,
             })
             audit_log("ingest beellama",
-                      f"src={src_name}, short={short_name}, dir={dir_name}, sha={sha[:12]}", "ok")
+                      f"src={src_name}, short={short_name}, dir={dir_name}, sha={sha[:12]}, per_model={init_status}", "ok")
         except Exception as e:
             errors.append(f"{src_name}: {e}")
             audit_log("ingest beellama 失败", f"file={src_name}, error={e}", "error")

@@ -1,5 +1,41 @@
 # framework-manager 版本历史
 
+## v1.6.2-patch1 (2026-06-24)
+
+### 🐛 修复：beellama ingest 需手动补 per-model
+
+**症状**：
+- v1.6.2 的 `/api/ingest_beellama` 只建软链 + 写 sha 别名
+- 用户在 WebUI 点“加载” 报 "模型缺 per-model 配置: ctx_size parallel ngpu_layers"
+- 加载无配置模型时需手动点模态框 → 选择使用 _fallback → 一步路难走
+
+**修复**：
+- 新增 `_init_per_model_for_ingest(short_name)` 辅助函数
+- ingest 建软链后自动调:
+  - 从 `_load_defaults` 读 `_fallback` (现成 131072/2/99)
+  - `defaults.models[short_name]` 补齐 (已存在不覆盖)
+  - `framework-manager.json` 的 `framework_params.beellama.models[short_name]` 补齐 (已存在不覆盖)
+- 仅在新建时落盘 (幂等性: 二次调用不写文件)
+- ingest 返回 `linked[].per_model = {created, ctx_size, parallel, ngpu_layers}`
+
+**与既有 `api_init_model_with_fallback` 区别**：
+| 项 | init_model_with_fallback (v1.1.5) | _init_per_model_for_ingest (v1.6.2-patch1) |
+|---|---|---|
+| 触发时机 | 加载时被动调 | ingest 时主动调 |
+| 用户交互 | 弹模态框需确认 | 静默 |
+| 重启 beellama | 会 | 不会 |
+| 不覆盖手动调过的 | 是 | 是 |
+| 写 defaults | 是 | 仅 created 时 |
+| 写 per-model | 是 | 仅 created 时 |
+
+**验证**（端到端）：
+- 模拟 `Qwen3.6-35B-A3B-Uncensored-IngestTest-v3.gguf` 1MB 头
+- ingest → linked[0].per_model.created = false (qwen3.6-uncensored 早存在)
+- per-model 字典里 qwen3.6-uncensored 条目 131072/1/99 仍正确
+- 清理后系统状态完全恢复
+
+---
+
 ## v1.6.2 (2026-06-24)
 
 ### 🆕 新增：beellama 端「📥 自动注册下载的模型」

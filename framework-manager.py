@@ -2552,6 +2552,43 @@ def api_set_ollama_global_params():
     return jsonify({"status": "ok", "params": cfg_global, "message": "已保存并重启 Ollama"})
 
 
+# ── Ollama 转发设置 (v1.8.1 新增, 与 beellama reasoning_off 对齐) ──────
+# 控制 9528 /v1/chat/completions 转发层怎么处理 ollama thinking
+# 不需重启 ollama, 保存后下次请求生效
+# merge_thinking:
+#   true  → 拼 thinking 到 content 前面 (老 client 友好)
+#   false → 思考放 reasoning_content, content 不变 (OpenAI thinking 协议标准)
+
+@app.route("/api/ollama_forwarding", methods=["GET"])
+def api_get_llama_forwarding():
+    """获取 Ollama 转发设置"""
+    config = load_config()
+    fwd = config.get("framework_params", {}).get("ollama", {}).get("forwarding", {})
+    return jsonify({
+        "merge_thinking": fwd.get("merge_thinking", False)
+    })
+
+
+@app.route("/api/ollama_forwarding", methods=["POST"])
+def api_set_ollama_forwarding():
+    """设置 Ollama 转发设置 (不需 restart ollama)"""
+    data = request.get_json(silent=True) or {}
+    if "merge_thinking" not in data:
+        return jsonify({"error": "merge_thinking 字段必填"}), 400
+    val = data["merge_thinking"]
+    if not isinstance(val, bool):
+        return jsonify({"error": "merge_thinking 必须是 boolean"}), 400
+    config = load_config()
+    if "framework_params" not in config:
+        config["framework_params"] = {"beellama": {"global": {}, "models": {}}, "ollama": {}, "comfyui": {}}
+    if "ollama" not in config["framework_params"]:
+        config["framework_params"]["ollama"] = {"global": {}, "models": {}}
+    config["framework_params"]["ollama"]["forwarding"] = {"merge_thinking": val}
+    save_config(config)
+    audit_log("设置 Ollama 转发设置", f"merge_thinking={val}", "ok")
+    return jsonify({"status": "ok", "merge_thinking": val, "message": "保存成功 (下次请求生效)"})
+
+
 # ── Ollama per-model Modelfile API (v1.1.8-patch2 新增) ─────────────────
 # 读: 从 Modelfile 读参数
 # 写: 写 Modelfile → ollama create 重建 tag (如 qwen3.6-q3:ctx128k)
@@ -4139,6 +4176,31 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 &nbsp;&nbsp;· 无 GPU / CPU only：<b>0</b>
 </p>
 </div>
+<!-- 🎛️ Ollama 转发设置 (v1.8.1 新增, 切到 ollama 时显示) -->
+<div class="card" id="ollama-forwarding-card" style="display:none;">
+<h2>🎛️ Ollama 转发设置</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+  控制 <b>9528 转发层</b> 对 ollama /api/chat 响应的处理 (与 beellama reasoning_off 对齐)。<br>
+  <b>不需重启 Ollama</b>，保存后下次请求生效。
+</p>
+<div class="form-row">
+  <div class="form-group">
+    <label>Thinking 输出</label>
+    <select id="ollama-merge-thinking" style="min-width:280px;">
+      <option value="false">分离 (thinking → reasoning_content, content 不变)</option>
+      <option value="true">合并 (thinking 拼到 content 前面, reasoning_content 留空)</option>
+    </select>
+  </div>
+  <div class="form-group" style="justify-content:flex-end;">
+    <button class="btn success" onclick="saveOllamaForwarding()" id="btn-save-ollama-forwarding">💾 保存</button>
+  </div>
+</div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>区别</b>：<br>
+&nbsp;&nbsp;· <b>分离</b> (默认, false)：OpenAI thinking 模型标准协议 (DeepSeek R1 / o1 / o3 风格)。需要客户端支持 reasoning_content 字段。<br>
+&nbsp;&nbsp;· <b>合并</b> (true)：老 client 友好，把 <think>...</think> 拼进 content 一起看到。不会丢失 thinking 信息。
+</p>
+</div>
 <!-- 📦 Ollama 模型专属参数 (v1.1.8-patch2 新增, 加载 ollama 模型后显示) -->
 <div class="card relative-card" id="ollama-model-params-card" style="display:none;">
 <h2>📦 Ollama 模型专属参数：<span id="ollama-model-params-name"></span></h2>
@@ -4670,6 +4732,7 @@ async function refresh() {
     }
     // ⚙️ 显示/隐藏 ollama 参数卡片 (v1.1.8-patch2)
     var ollamaParamsCard = document.getElementById('ollama-params-card');
+    var ollamaForwardingCard = document.getElementById('ollama-forwarding-card');  // v1.8.1
     var ollamaModelParamsCard = document.getElementById('ollama-model-params-card');
     var ollamaDefaultsCard = document.getElementById('ollama-defaults-card');
     var manifestGenParamsCard = document.getElementById('manifest-gen-params-card');  // v1.1.17
@@ -4678,6 +4741,10 @@ async function refresh() {
       if (fw === 'ollama') {
         ollamaParamsCard.style.display = 'block';
         ollamaDefaultsCard.style.display = 'block';
+        if (ollamaForwardingCard) {  // v1.8.1
+          ollamaForwardingCard.style.display = 'block';
+          loadOllamaForwarding();
+        }
         if (manifestGenParamsCard) {
           manifestGenParamsCard.style.display = 'block';
           loadManifestGenParams();
@@ -4688,6 +4755,7 @@ async function refresh() {
       } else {
         ollamaParamsCard.style.display = 'none';
         ollamaDefaultsCard.style.display = 'none';
+        if (ollamaForwardingCard) ollamaForwardingCard.style.display = 'none';  // v1.8.1
         if (manifestGenParamsCard) manifestGenParamsCard.style.display = 'none';
         if (ingestGgufCard) ingestGgufCard.style.display = 'none';
       }
@@ -5542,6 +5610,38 @@ async function saveOllamaGlobalParams() {
   } finally {
     btn.disabled = false;
     btn.textContent = '💾 保存并重启 Ollama';
+  }
+}
+
+// 🎛️ Ollama 转发设置 (v1.8.1 新增, 与 beellama reasoning_off 对齐)
+async function loadOllamaForwarding() {
+  try {
+    const data = await fetchJSON('/api/ollama_forwarding');
+    document.getElementById('ollama-merge-thinking').value = String(data.merge_thinking);
+  } catch (e) {
+    console.error('加载 Ollama 转发设置失败:', e);
+  }
+}
+
+async function saveOllamaForwarding() {
+  const btn = document.getElementById('btn-save-ollama-forwarding');
+  btn.disabled = true;
+  btn.textContent = '⏳ 保存中...';
+  try {
+    const payload = {
+      merge_thinking: document.getElementById('ollama-merge-thinking').value === 'true',
+    };
+    const resp = await fetchJSON('/api/ollama_forwarding', 'POST', payload);
+    if (resp.status === 'ok') {
+      showToast('✅ Ollama 转发设置已保存 (下次请求生效)', 'success', 3000);
+    } else {
+      showToast('保存失败：' + (resp.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 保存';
   }
 }
 
@@ -6543,9 +6643,35 @@ def api_qstatus():
 # model 格式: "framework/modelname" (如 "ollama/qwen3.6-35b" / "beellama/qwen3.6-q3")
 # append-only: 不改任何现有函数/路由
 
-def _openai_chat_ollama_to_openai(ollama_resp, model_str):
-    """ollama /api/chat 响应 → OpenAI /v1/chat/completions 响应"""
+def _openai_chat_ollama_to_openai(ollama_resp, model_str, merge_thinking=False):
+    """ollama /api/chat 响应 → OpenAI /v1/chat/completions 响应
+    v1.8.1: merge_thinking 控制怎么处理 ollama 的 message.thinking
+        - merge_thinking=False (默认, OpenAI thinking 协议):
+            thinking → reasoning_content, content 不变
+        - merge_thinking=True (老 client 友好):
+            thinking 拼到 content 前面 (<think>...</think>\n\n + content)
+            reasoning_content 留空
+    """
     msg = ollama_resp.get("message", {}) or {}
+    thinking = msg.get("thinking", "") or ""
+    content = msg.get("content", "") or ""
+
+    if merge_thinking and thinking:
+        # 拼到 content 前面 (确保不丢失 thinking 信息)
+        merged_content = f"<think>\n{thinking}\n</think>\n\n{content}" if content else f"<think>\n{thinking}\n</think>"
+        out_reasoning = None
+        out_content = merged_content
+    else:
+        out_reasoning = thinking if thinking else None
+        out_content = content
+
+    choice_msg = {
+        "role": msg.get("role", "assistant"),
+        "content": out_content
+    }
+    if out_reasoning:
+        choice_msg["reasoning_content"] = out_reasoning
+
     return {
         "id": f"chatcmpl-{ollama_resp.get('created_at', '').replace(':', '').replace('.', '').replace('-', '')[:24] or 'fm'}",
         "object": "chat.completion",
@@ -6553,10 +6679,7 @@ def _openai_chat_ollama_to_openai(ollama_resp, model_str):
         "model": model_str,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": msg.get("role", "assistant"),
-                "content": msg.get("content", "")
-            },
+            "message": choice_msg,
             "finish_reason": "stop" if ollama_resp.get("done") else "length"
         }],
         "usage": {
@@ -6627,6 +6750,7 @@ def openai_chat_completions():
             "model": model_name,
             "messages": messages,
             "stream": False,
+            "think": False,  # v1.8.2: 强制关闭 ollama thinking，防止 gemma4/qwen3-vl 等 thinking 能力模型吃掉所有 token
         }
         # 透传 ollama 特定参数 (options / format / keep_alive)
         for k in ("options", "format", "keep_alive"):
@@ -6682,7 +6806,10 @@ def openai_chat_completions():
     upstream_data = json.loads(_oa_b64.b64decode(body_b64))
 
     if framework == "ollama":
-        openai_resp = _openai_chat_ollama_to_openai(upstream_data, model_str)
+        # v1.8.1: 读 config.ollama.forwarding.merge_thinking 决定 thinking 处理
+        _cfg = load_config()
+        _merge = _cfg.get("framework_params", {}).get("ollama", {}).get("forwarding", {}).get("merge_thinking", False)
+        openai_resp = _openai_chat_ollama_to_openai(upstream_data, model_str, merge_thinking=bool(_merge))
     elif framework == "beellama":
         # beellama 已经是 OpenAI 格式, 修正 model 字段后直接返回
         upstream_data["model"] = model_str

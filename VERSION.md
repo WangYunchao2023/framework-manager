@@ -1,5 +1,38 @@
 # framework-manager 版本历史
 
+## v1.6.2-patch2 (2026-06-24)
+
+### 🎨 UI 重构：beellama 默认值卡拆分（统一默认 vs 当前模型默认）
+
+**背景**：
+- 原 `defaults-card` 同时包含两块:
+  - ⚙️ **统一默认 (_fallback)**: 未来「➕ 添加新模型」会用此值初始化
+  - 📋 **当前模型默认值**: 当前加载模型在 defaults.models 中的值
+- 但只有一个「💾 保存默认值」按钮, 不清是改全局还是仅改当前模型
+- 用户反馈: 需要明确区分, 避免误保存。
+
+**改动 (仅 beellama 端, ollama 独立卡保留)**：
+
+| 卡片 | 之前 | 现在 |
+|---|---|---|
+| 🎯 默认值卡 | 包含统一默认 + 当前模型默认两块, 单个保存按钮 | 重命名 🎯 **统一默认值**，只保留统一默认块 + 「💾 保存统一默认」按钮 |
+| 📦 模型专属参数卡 | 只含 per-model 编辑 | 底部新增 📋 **当前模型默认值** 块 + 「💾 保存默认」按钮 |
+
+**API 调整**：POST `/api/defaults` 支持部分更新
+- 旧行为：必须同时传 `_fallback` 和 `models`, 前端要全量重组
+- 新行为：
+  - 只传 `_fallback` → 仅更 `_fallback`, `models` 完全保留
+  - 只传 `models` → 合并 `models` (传过的 key 被覆盖, 未传保留)
+  - 两个都传 → 全量更新 (向后兼容)
+
+**验证（端到端）**：
+- POST 只传 `_fallback` → _fallback 变化, models 5 个条目原封不动 ✅
+- POST 只传 models[short_name] → 只该 short_name 变化, 其他 4 个模型 + _fallback 完全保留 ✅
+- HTML 渲染: defaults-card 仅含 _fallback + 保存统一默认按钮 ✅
+- HTML 渲染: beellama-model-params-card 底部含 model-defaults-current-row + 保存默认按钮 ✅
+
+---
+
 ## v1.6.2-patch1 (2026-06-24)
 
 ### 🐛 修复：beellama ingest 需手动补 per-model

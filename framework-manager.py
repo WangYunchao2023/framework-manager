@@ -421,6 +421,110 @@ _MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST = {
     "stop": [],  # v1.7.0: 空 list 表示不设 stop tokens
 }
 
+# v1.8.0: 按模型架构自动选 stop tokens (general.architecture → 默认 stop list)
+# 优先级: UI 「📋 新模型注册参数」 stop > 本映射自动 stop > 空 list (不设)
+# 来源: 各模型上游 tokenizer_config.json / chat_template.jinja 里的 eos_token
+_MODEL_FAMILY_STOP_TOKENS = {
+    # Qwen 系列 (qwen2 / qwen2.5 / qwen3 都用同一套 chatml)
+    "qwen2":     ["<|im_end|>", "<|endoftext|>"],
+    "qwen2.5":   ["<|im_end|>", "<|endoftext|>"],
+    "qwen3":     ["<|im_end|>", "<|endoftext|>"],
+    "qwen3moe":  ["<|im_end|>", "<|endoftext|>"],
+    "qwen35moe": ["<|im_end|>", "<|endoftext|>"],  # v1.8.0: qwen3.6/3.5 moe (实际命名 qwen35moe)
+    "qwen3vl":   ["<|im_end|>", "<|endoftext|>"],  # v1.8.0: qwen3 vision-language
+    # DeepSeek (与 qwen 类似)
+    "deepseek":  ["<|im_end|>", "<|endoftext|>"],
+    "deepseek2": ["<|im_end|>", "<|endoftext|>"],
+    # Yi 系列 (与 qwen 类似 chatml)
+    "yi":        ["<|im_end|>", "<|endoftext|>"],
+    # Gemma 系列 (tokenizer.ggml.model = llama, 但 stop 不同)
+    "gemma":     ["<end_of_turn>", "<eos>"],
+    "gemma2":    ["<end_of_turn>", "<eos>"],
+    "gemma3":    ["<end_of_turn>", "<start_of_turn>", "<eos>"],
+    "gemma4":    ["<end_of_turn>", "<start_of_turn>", "<eos>"],
+    # Llama 系列
+    "llama":     ["</s>", "<|eot_id|>"],
+    "llama3":    ["<|eot|>", "<|eom|>"],
+    "llama3.1":  ["<|eot|>", "<|eom|>"],
+    "llama3.2":  ["<|eot|>", "<|eom|>"],
+    # Mistral / Mixtral
+    "mistral":   ["</s>", "[INST]", "[/INST]"],
+    "mixtral":   ["</s>", "[INST]", "[/INST]"],
+    # Phi 系列
+    "phi":       ["<|endoftext|>", "<|end|>"],
+    "phi2":      ["<|endoftext|>", "<|end|>"],
+    "phi3":      ["<|endoftext|>", "<|end|>"],
+    "phi4":      ["<|endoftext|>", "<|end|>"],
+}
+
+def _resolve_family_stop_tokens(architecture):
+    """v1.8.0: 按 general.architecture 推断 stop tokens
+
+    支持后缀匹配: "qwen2.5" 也命中 "qwen2" key, "llama3.1" 命中 "llama3" key.
+    返回 list; 未命中返回 [].
+    """
+    if not architecture:
+        return []
+    arch = architecture.lower().strip()
+    # 精确匹配
+    if arch in _MODEL_FAMILY_STOP_TOKENS:
+        return list(_MODEL_FAMILY_STOP_TOKENS[arch])
+    # 前缀匹配 (qwen2.5 → qwen2, llama3.1 → llama3, gemma3.1 → gemma3)
+    # 按 key 长度倒序, 优先匹配最长的 (gemma3.1 → gemma3 而不是 gemma)
+    for key in sorted(_MODEL_FAMILY_STOP_TOKENS.keys(), key=len, reverse=True):
+        if arch == key or arch.startswith(key + "."):
+            return list(_MODEL_FAMILY_STOP_TOKENS[key])
+    return []
+
+def _resolve_stop_tokens_for_ingest(ui_stop, architecture, gguf_name=None):
+    """v1.8.0: stop tokens 优先级决策
+
+    优先级:
+      1. UI 「📋 新模型注册参数」 stop 非空 → 用 UI 的
+      2. 模型族映射命中 (优先 architecture, fallback 从 general.name 推断) → 用自动 stop
+      3. 都未命中 → 返回空 list (不写入 stop 字段, 走 ollama 默认)
+
+    返回: (stop_tokens: list, source: str) — source 仅供日志
+    """
+    if ui_stop and len(ui_stop) > 0:
+        return list(ui_stop), "user_config"
+    auto = _resolve_family_stop_tokens(architecture)
+    if auto:
+        return auto, f"auto_family[{architecture}]"
+    # fallback: 从 general.name 推断 (适用 GGUF 不含 general.architecture 的场景)
+    inferred = _infer_architecture_from_name(gguf_name)
+    if inferred:
+        auto2 = _resolve_family_stop_tokens(inferred)
+        if auto2:
+            return auto2, f"auto_from_name[{gguf_name}->{inferred}]"
+    return [], "none"
+
+def _infer_architecture_from_name(name):
+    """v1.8.0: 从 general.name 推断 architecture (适用 GGUF 不含 general.architecture 的场景)
+
+    例: "Gemma4 26B" -> "gemma4"
+        "Qwen3-14B" -> "qwen3"
+    返回 architecture str 或 None.
+    """
+    if not name:
+        return None
+    n = name.lower()
+    # 按 key 长度倒序, 优先匹配最长的 (gemma3.1 -> gemma3 而不是 gemma)
+    for key in sorted(_MODEL_FAMILY_STOP_TOKENS.keys(), key=len, reverse=True):
+        idx = 0
+        while True:
+            idx = n.find(key, idx)
+            if idx < 0:
+                break
+            end = idx + len(key)
+            # 后一位必须是字符串结尾或非字母数字
+            if end >= len(n) or not n[end].isalpha():
+                # 前一位必须是字符串开头或非字母数字
+                if idx == 0 or not n[idx-1].isalpha():
+                    return key
+            idx += 1
+    return None
+
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
 _DEFAULT_FALLBACK = {"ctx_size": 131072, "parallel": 2, "ngpu_layers": 99}
 _DEFAULT_MODELS = {
@@ -3047,7 +3151,7 @@ def api_scan_for_addition():
 
 # ── v1.1.18: 解析 GGUF header (用于 ingest_gguf 提取 general.name 和 context_length) ─────
 def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
-    """解析 GGUF v3 header, 提取 general.name 和 context_length
+    """解析 GGUF v3 header, 提取 general.name, general.architecture, context_length
 
     GGUF v3 格式:
     - magic (4B) = "GGUF"
@@ -3058,11 +3162,11 @@ def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
 
     需要的字段:
     - general.name (GGUF_STRING=8): model name
+    - general.architecture (GGUF_STRING=8): 架构名 (qwen2 / gemma4 / llama / ...)
     - <arch>.context_length (GGUF_UINT32=4): native context length
-      (qwen2arch=llama → llama.context_length, qwen2 → qwen2.context_length 等)
 
     只读前 max_bytes 字节 (默认 10MB), 避开多 GB GGUF 文件.
-    返回: {name: str|None, context_length: int|None} 或 失败时 {}
+    返回: {name: str|None, architecture: str|None, context_length: int|None} 或 失败时 {}
     """
     try:
         with open(gguf_path, "rb") as f:
@@ -3087,9 +3191,10 @@ def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
         GGUF_UINT64 = 10
         GGUF_INT64 = 11
         GGUF_FLOAT32 = 6
+        GGUF_BOOL = 7  # v1.8.0: bool 类型
         GGUF_ARRAY = 9
 
-        result = {"name": None, "context_length": None}
+        result = {"name": None, "architecture": None, "context_length": None}
         offset = 24
         for _ in range(int(kv_count)):
             if offset + 8 > len(head):
@@ -3105,7 +3210,7 @@ def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
             value_type = struct.unpack("<I", head[offset:offset+4])[0]
             offset += 4
 
-            # 提取 name (general.name) 和 context_length
+            # 提取 name (general.name), architecture (general.architecture), context_length
             if key == "general.name" and value_type == GGUF_STRING:
                 if offset + 8 > len(head):
                     break
@@ -3114,6 +3219,16 @@ def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
                 if offset + str_len > len(head):
                     break
                 result["name"] = head[offset:offset+str_len].decode("utf-8", errors="ignore")
+                offset += str_len
+            elif key == "general.architecture" and value_type == GGUF_STRING:
+                # v1.8.0: 用于按模型族自动选 stop tokens
+                if offset + 8 > len(head):
+                    break
+                str_len = struct.unpack("<Q", head[offset:offset+8])[0]
+                offset += 8
+                if offset + str_len > len(head):
+                    break
+                result["architecture"] = head[offset:offset+str_len].decode("utf-8", errors="ignore")
                 offset += str_len
             elif key.endswith(".context_length") and value_type in (GGUF_UINT32, GGUF_INT32):
                 if offset + 4 > len(head):
@@ -3150,6 +3265,8 @@ def _parse_gguf_header(gguf_path, max_bytes=10*1024*1024):
                     offset += 4 * arr_len
                 elif arr_type in (GGUF_UINT64, GGUF_INT64):
                     offset += 8 * arr_len
+                elif arr_type == GGUF_BOOL:  # v1.8.0: bool array (gemma4 sliding_window_pattern 等)
+                    offset += 1 * arr_len  # bool = 1 byte
                 else:
                     break  # 不支持的 array type, 跳出
             else:
@@ -3245,6 +3362,7 @@ def _ingest_gguf():
             # 2d. 解析 GGUF header
             info = _parse_gguf_header(str(sha_blob))
             gguf_name = info.get("name") or f"gguf-{sha[:8]}"
+            gguf_arch = info.get("architecture")  # v1.8.0: 用于按模型族自动选 stop
             gguf_ctx = info.get("context_length")
             # num_ctx = min(user设置, gguf 原生 ctx)
             if gguf_ctx and 512 <= gguf_ctx <= 1048576:
@@ -3253,16 +3371,22 @@ def _ingest_gguf():
                 num_ctx = user_num_ctx
             ctx_k = f"ctx{num_ctx // 1024}k" if num_ctx % 1024 == 0 else f"ctx{num_ctx}"
 
-            # 2e. 写 params blob (v1.7.0: 完整字段, 含 stop)
+            # v1.8.0: 决定 stop tokens (UI > 模型族自动 > 空)
+            ui_stop = manifest_params.get("stop") or []
+            stop_tokens, stop_source = _resolve_stop_tokens_for_ingest(ui_stop, gguf_arch, gguf_name=gguf_name)
+
+            # 2e. 写 params blob (v1.7.0: 完整字段, 含 stop; v1.8.0: stop 按优先级)
             params_payload = {"num_ctx": num_ctx}
             for k in _MANIFEST_GEN_PARAM_FIELDS:
                 if k == "num_ctx":
                     continue
+                if k == "stop":
+                    # v1.8.0: 用优先级决策的结果 (可能与 UI 不同)
+                    if stop_tokens:
+                        params_payload["stop"] = stop_tokens
+                    continue
                 v = manifest_params.get(k)
                 if v is None:
-                    continue
-                # 空 list 不写入 (与 ollama 默认一致)
-                if isinstance(v, list) and len(v) == 0:
                     continue
                 params_payload[k] = v
             params_data = _json.dumps(params_payload).encode()
@@ -3270,6 +3394,7 @@ def _ingest_gguf():
             params_blob = blobs_dir / f"sha256-{params_sha}"
             if not params_blob.exists():
                 params_blob.write_bytes(params_data)
+            audit_log("GGUF 注册", f"name={gguf_name}:{ctx_k}, arch={gguf_arch}, stop_source={stop_source}, stop={stop_tokens}", "ok")
 
             # 2f. 写 config blob
             config_data = _json.dumps({
@@ -3557,6 +3682,18 @@ def _auto_register_gguf_for_ollama():
     if not blobs_dir.exists():
         return {"registered": [], "skipped_existing": [], "errors": [f"blobs 目录不存在: {blobs_dir}"]}
 
+    # v1.8.0: 读 「📋 新模型注册参数」 文件 (auto_register 路径也需生成 stop)
+    manifest_params = _MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST
+    if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
+        try:
+            with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
+                loaded = _json.load(f)
+            for k in _MANIFEST_GEN_PARAM_FIELDS:
+                if k in loaded:
+                    manifest_params[k] = loaded[k]
+        except Exception as e:
+            return {"registered": [], "skipped_existing": [], "errors": [f"读新模型注册参数文件失败: {e}"]}
+
     # 1. 收集所有 manifest 已引用的 sha256
     referenced = set()
     if manifests_dir.exists():
@@ -3601,15 +3738,25 @@ def _auto_register_gguf_for_ollama():
         # 生成模型名: 取 sha 前 8 位避免冲突
         model_short = f"auto-{sha[:8]}"
         try:
-            # 3a. 写 params blob (v1.7.0: 完整字段, 含 stop)
+            # v1.8.0: 读 GGUF header 拿 architecture → 用于按模型族选 stop
+            auto_info = _parse_gguf_header(str(Path(OLLAMA_MODELS_DIR) / "blobs" / blob_name))
+            auto_arch = auto_info.get("architecture")
+            auto_name = auto_info.get("name")
+            # v1.8.0: 决定 stop tokens (UI > 模型族自动 > 空)
+            ui_stop_auto = manifest_params.get("stop") or []
+            stop_tokens_auto, stop_source_auto = _resolve_stop_tokens_for_ingest(ui_stop_auto, auto_arch, gguf_name=auto_name)
+
+            # 3a. 写 params blob (v1.7.0: 完整字段; v1.8.0: stop 按优先级)
             params_payload = {"num_ctx": 131072}
             for k in _MANIFEST_GEN_PARAM_FIELDS:
                 if k == "num_ctx":
                     continue
+                if k == "stop":
+                    if stop_tokens_auto:
+                        params_payload["stop"] = stop_tokens_auto
+                    continue
                 v = manifest_params.get(k)
                 if v is None:
-                    continue
-                if isinstance(v, list) and len(v) == 0:
                     continue
                 params_payload[k] = v
             params_data = _json.dumps(params_payload).encode()
@@ -3617,6 +3764,7 @@ def _auto_register_gguf_for_ollama():
             params_blob = blobs_dir / f"sha256-{params_sha}"
             if not params_blob.exists():
                 params_blob.write_bytes(params_data)
+            audit_log("GGUF 自动注册", f"model={model_short}, arch={auto_arch}, stop_source={stop_source_auto}, stop={stop_tokens_auto}", "ok")
 
             # 3b. 写 config blob
             config_data = _json.dumps({

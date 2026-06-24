@@ -38,6 +38,55 @@
 
 ---
 
+## v1.8.0 (2026-06-24)
+
+### 🎯 自动按模型族注入 stop tokens（不依赖 UI 配置）
+
+**背景**：
+- v1.7.0 解决了 params blob 写入完整字段，但 stop 默认是空 list
+- 实际场景：用户下载新 GGUF 后不会主动去 9528 webui 配置 stop tokens
+- 模型没有 stop tokens → 跑到 max_predict 上限才停，慢、可能乱输出、吃光 token
+
+**方案**：在 ingest/auto_register 路径加"模型族 → 默认 stop tokens"映射
+- 优先级: UI 「📋 新模型注册参数」 stop > 模型族自动 stop > 空（不设）
+- 覆盖 qwen2 / qwen2.5 / qwen3 / qwen3moe / qwen35moe (qwen3.6) / qwen3vl /
+  gemma / gemma2 / gemma3 / gemma4 / llama / llama3 / mistral / phi 等 16 个族
+- 未知架构 fallback：从 general.name 推断（适用 GGUF 不含 general.architecture 的场景）
+
+**改动**：
+- 新增 `_MODEL_FAMILY_STOP_TOKENS` 字典（16 个族 × 2-3 个 stop tokens）
+- 新增 `_resolve_family_stop_tokens(architecture)` 函数
+- 新增 `_infer_architecture_from_name(name)` fallback 函数
+- 新增 `_resolve_stop_tokens_for_ingest(ui_stop, architecture, gguf_name)` 优先级决策
+- `_parse_gguf_header` 新增提取 `general.architecture` 字段
+- 修复 `_parse_gguf_header` 不支持 bool array（gemma4 sliding_window_pattern 卡住）
+- `_ingest_gguf` / `_auto_register_gguf_for_ollama` 写入 stop 时调用决策函数
+- `_auto_register_gguf_for_ollama` 加载 manifest_params (之前漏掉，触发 NameError)
+
+**实际生效**：
+- qwen3.6-q3 / qwen3.6-q3-uncensored / qwen3-vl 三个模型的 params blob 重新生成
+- gemma4 现有 params blob 保留 (已经有 stop)
+- qwen3 (14b) 保留 (ollama 自带完整 stop)
+
+**不影响**：
+- 已有模型 (params blob 已存在, 不会主动重写)
+- ollama defaults / ollama model params 块
+- beellama 配置
+- UI 行为 (stop 输入框仍生效, 优先于自动)
+
+**端到端测试**：
+- 单元测试 _resolve_family_stop_tokens: 16 个 arch 全 PASS ✅
+- 单元测试 _resolve_stop_tokens_for_ingest 优先级: 7 场景全 PASS ✅
+- 真实 GGUF ingest (假 gemma4 / qwen3 / unknown / qwen3.6): 全 PASS ✅
+- auto_register 路径 (sha 命名 GGUF): PASS ✅ (修了 NameError)
+- UI 优先级 (config 设 stop=["<|user_custom|>"]): 写入正确 ✅
+- ollama /api/show parameters: 6 模型全显示 stop tokens ✅
+- ollama /api/chat 推理: done_reason=stop (生效) ✅
+
+**Diff**：+113 / -8 行（framework-manager.py）
+
+---
+
 ## v1.6.2-patch4 (2026-06-24)
 
 ### 🎨 重构：默认设置下拉复用主下拉数据源

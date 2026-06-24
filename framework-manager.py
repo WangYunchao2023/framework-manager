@@ -410,7 +410,7 @@ OLLAMA_MODELFILES_DIR = os.path.join(OLLAMA_MODELS_DIR, "modelfiles")
 PROJECT_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 MANIFEST_GEN_PARAMS_FILE = os.path.join(PROJECT_CONFIG_DIR, "ollama_manifest_generate_parameter.json")
 # manifest 生成参数合法字段 (顺序 = UI 顺序)
-_MANIFEST_GEN_PARAM_FIELDS = ["num_ctx", "temperature", "top_p", "top_k", "repeat_penalty"]
+_MANIFEST_GEN_PARAM_FIELDS = ["num_ctx", "temperature", "top_p", "top_k", "repeat_penalty", "stop"]
 # v1.1.18: ingest_gguf 兑底参数 (「📋 新模型注册参数」 文件不存在时使用, 仅 ingest 路径)
 _MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST = {
     "num_ctx": 131072,
@@ -418,6 +418,7 @@ _MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST = {
     "top_p": 0.95,
     "top_k": 20,
     "repeat_penalty": 1.0,
+    "stop": [],  # v1.7.0: 空 list 表示不设 stop tokens
 }
 
 # 首次启动初始化内容 (从原 wrapper 4 case 导入 + 统一默认)
@@ -2638,19 +2639,30 @@ def api_get_manifest_gen_params():
 @app.route("/api/manifest_gen_params", methods=["POST"])
 def api_set_manifest_gen_params():
     """保存「📋 新模型注册参数」 → 写项目内 config/ollama_manifest_generate_parameter.json
-    body: {num_ctx, temperature, top_p, top_k, repeat_penalty}
+    body: {num_ctx, temperature, top_p, top_k, repeat_penalty, stop}
+    v1.7.0: 新增 stop (list of str) — 自动注册模型时写入 params blob
     """
     data = request.get_json(silent=True) or {}
     valid_keys = set(_MANIFEST_GEN_PARAM_FIELDS)
     unknown = set(data.keys()) - valid_keys
     if unknown:
         return jsonify({"error": f"未知字段: {unknown}"}), 400
-    # 验证 + 转为合法 int/float
+    # 验证 + 转为合法类型
     out = {}
     int_fields = {"num_ctx", "top_k"}
+    list_fields = {"stop"}  # v1.7.0: stop 是 list of str
     for k in valid_keys:
         v = data.get(k)
-        if v is None or v == "":
+        if v is None:
+            # 字段未提供 → 从现有文件加载 (部分更新)
+            continue
+        if k in list_fields:
+            # stop: list of str, 允许空 list
+            if not isinstance(v, list):
+                return jsonify({"error": f"{k} 必须是 list"}), 400
+            out[k] = [str(x) for x in v if x != ""]
+            continue
+        if v == "":
             return jsonify({"error": f"{k} 不能为空"}), 400
         try:
             if k in int_fields:
@@ -2659,6 +2671,16 @@ def api_set_manifest_gen_params():
                 out[k] = float(v)
         except (TypeError, ValueError):
             return jsonify({"error": f"{k} 必须是数字"}), 400
+    # 合并现有文件 (保证部分更新不丢字段)
+    if os.path.exists(MANIFEST_GEN_PARAMS_FILE):
+        try:
+            with open(MANIFEST_GEN_PARAMS_FILE, "r") as f:
+                existing = json.load(f)
+            for k in _MANIFEST_GEN_PARAM_FIELDS:
+                if k not in out and k in existing:
+                    out[k] = existing[k]
+        except Exception:
+            pass
     # num_ctx 范围
     if not (512 <= out["num_ctx"] <= 1048576):
         return jsonify({"error": f"num_ctx 越界 (512-1048576): {out['num_ctx']}"}), 400
@@ -3231,8 +3253,19 @@ def _ingest_gguf():
                 num_ctx = user_num_ctx
             ctx_k = f"ctx{num_ctx // 1024}k" if num_ctx % 1024 == 0 else f"ctx{num_ctx}"
 
-            # 2e. 写 params blob (只写 num_ctx)
-            params_data = _json.dumps({"num_ctx": num_ctx}).encode()
+            # 2e. 写 params blob (v1.7.0: 完整字段, 含 stop)
+            params_payload = {"num_ctx": num_ctx}
+            for k in _MANIFEST_GEN_PARAM_FIELDS:
+                if k == "num_ctx":
+                    continue
+                v = manifest_params.get(k)
+                if v is None:
+                    continue
+                # 空 list 不写入 (与 ollama 默认一致)
+                if isinstance(v, list) and len(v) == 0:
+                    continue
+                params_payload[k] = v
+            params_data = _json.dumps(params_payload).encode()
             params_sha = hashlib.sha256(params_data).hexdigest()
             params_blob = blobs_dir / f"sha256-{params_sha}"
             if not params_blob.exists():
@@ -3568,8 +3601,18 @@ def _auto_register_gguf_for_ollama():
         # 生成模型名: 取 sha 前 8 位避免冲突
         model_short = f"auto-{sha[:8]}"
         try:
-            # 3a. 写 params blob (num_ctx=131072)
-            params_data = _json.dumps({"num_ctx": 131072}).encode()
+            # 3a. 写 params blob (v1.7.0: 完整字段, 含 stop)
+            params_payload = {"num_ctx": 131072}
+            for k in _MANIFEST_GEN_PARAM_FIELDS:
+                if k == "num_ctx":
+                    continue
+                v = manifest_params.get(k)
+                if v is None:
+                    continue
+                if isinstance(v, list) and len(v) == 0:
+                    continue
+                params_payload[k] = v
+            params_data = _json.dumps(params_payload).encode()
             params_sha = hashlib.sha256(params_data).hexdigest()
             params_blob = blobs_dir / f"sha256-{params_sha}"
             if not params_blob.exists():
@@ -4047,6 +4090,11 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
       <option value="1.2">1.2 (中等)</option>
       <option value="1.3">1.3 (强)</option>
     </select>
+  </div>
+  <div class="form-group" style="flex-basis:100%;">
+    <label>stop tokens (逗号分隔, v1.7.0 新增)</label>
+    <input type="text" id="mgen-stop" style="min-width:480px;" placeholder="<|im_end|>, <|endoftext|>, ... (留空 = 不设置)">
+    <span style="font-size:0.72rem;color:var(--text-dim);">· 写入 params blob 的 stop 数组 · 空 = 不写入 · 多 token 用英文逗号分隔</span>
   </div>
   <div class="form-group" style="justify-content:flex-end;">
     <button class="btn success" onclick="saveManifestGenParams()" id="btn-save-mgen-params">💾 保存</button>
@@ -5449,6 +5497,9 @@ async function loadManifestGenParams() {
     if (p.top_p !== undefined) document.getElementById('mgen-top-p').value = String(p.top_p);
     if (p.top_k) document.getElementById('mgen-top-k').value = String(p.top_k);
     if (p.repeat_penalty !== undefined) document.getElementById('mgen-repeat-penalty').value = String(p.repeat_penalty);
+    // v1.7.0: stop (list → comma-separated string)
+    const stopEl = document.getElementById('mgen-stop');
+    if (stopEl) stopEl.value = Array.isArray(p.stop) ? p.stop.join(', ') : '';
   } catch (e) {
     console.error('加载 新模型注册参数 失败:', e);
   }
@@ -5459,12 +5510,16 @@ async function saveManifestGenParams() {
   btn.disabled = true;
   btn.textContent = '⏳ 保存中...';
   try {
+    const stopRaw = (document.getElementById('mgen-stop')?.value || '').trim();
+    // v1.7.0: 解析 stop (逗号分隔 → list, 过滤空字符串)
+    const stopArr = stopRaw ? stopRaw.split(',').map(s => s.trim()).filter(s => s !== '') : [];
     const payload = {
       num_ctx: document.getElementById('mgen-num-ctx').value,
       temperature: document.getElementById('mgen-temperature').value,
       top_p: document.getElementById('mgen-top-p').value,
       top_k: document.getElementById('mgen-top-k').value,
       repeat_penalty: document.getElementById('mgen-repeat-penalty').value,
+      stop: stopArr,
     };
     const resp = await fetchJSON('/api/manifest_gen_params', 'POST', payload);
     if (resp.status === 'ok') {

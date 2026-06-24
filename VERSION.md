@@ -1,5 +1,43 @@
 # framework-manager 版本历史
 
+## v1.7.0 (2026-06-24)
+
+### 🎯 新模型注册参数：新增 stop tokens 字段
+
+**背景**：
+- 用户报告 gemma4 长 context 时"GPU 高功耗 + 不输出结果"
+- 调查发现 params blob 中有两个 `""` 空 stop token（之前 ollama create 误改生成的）
+- 空 stop 等于"立刻停止"，模型每个 token 都被截断 → response 空，eval_count=800
+- 同时识别 gemma4 默认启用 thinking mode，导致 content 字段空（真正的卡死问题，需另修）
+
+**改动**：
+- `_MANIFEST_GEN_PARAM_FIELDS` 加 `"stop"`（UI 块 + API 验证自动支持）
+- `_MANIFEST_GEN_PARAMS_DEFAULTS_FOR_INGEST` 加 `"stop": []` 兑底
+- `_ingest_gguf()` 写 params blob 时用完整字段（不再只写 num_ctx）
+- `_auto_register_gguf()` 写 params blob 时用完整字段（与 ingest 对齐）
+- `api_set_manifest_gen_params` 支持部分更新（未提供字段从现有文件加载）+ stop list 验证
+- UI「📋 新模型注册参数」块加 stop 输入框（逗号分隔 → list）
+- JS `loadManifestGenParams` / `saveManifestGenParams` 加 stop 字段
+
+**不影响**：
+- ollama defaults 块 / ollama model params 块（不写 params blob，只影响 Modelfile 路径）
+- beellama 配置
+- 现有 6 个已注册模型（params blob 已存在，新规则仅影响新 ingest）
+
+**用户操作**：
+- 9528 webui → 切到 ollama → 「📋 新模型注册参数」→ 填 stop tokens（逗号分隔）→ 保存
+- 之后下载新 GGUF → ingest / auto_register 自动套用
+
+**端到端测试**：
+- T1-T8: POST /api/manifest_gen_params 各种边界（list/str/int/empty/unknown/部分更新） ✅
+- T-ingest: 假 GGUF ingest → params blob 含完整 6 字段 + stop ✅
+- T-auto-register: 代码改动到位（auto_register 仅处理 sha256-XXX 命名，不处理 .gguf 后缀） ✅
+- T-gemma4: 直接 patch params blob 去掉空 stop，验证 response 仍为空（根因 = thinking mode，另修） ✅
+
+**Diff**：+63 / -8 行（framework-manager.py）
+
+---
+
 ## v1.6.2-patch4 (2026-06-24)
 
 ### 🎨 重构：默认设置下拉复用主下拉数据源

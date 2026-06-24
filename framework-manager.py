@@ -3837,16 +3837,16 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <div class="card" id="ingest-beellama-card" style="display:none;">
 <h2>📥 自动注册下载的模型</h2>
 <p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
-  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 计算 sha256 · 在 <code>~/models/&lt;dir&gt;/</code> 下建立软链接 → ollama blob · 加载 beellama 后即可用 · <b style="color:#4ade80;">不影响 ollama manifest / modelfile</b> · <b style="color:#4ade80;">不删除 ollama blobs 里的原文件</b>
+  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 计算 sha256 · 在 <code>~/models/&lt;dir&gt;/</code> 下建立软链接 → ollama blob · 同时初始化 per-model 参数 (ctx/parallel/ngl) · 加载 beellama 后即可用 · <b style="color:#4ade80;">不影响 ollama manifest / modelfile</b> · <b style="color:#4ade80;">不删除 ollama blobs 里的原文件</b>
 </p>
 <div class="form-row">
   <div class="form-group" style="flex:1;">
-    <button class="btn primary" onclick="ingestBeellama()" id="btn-ingest-beellama" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并为 beellama 建立软链接</button>
+    <button class="btn primary" onclick="ingestBeellama()" id="btn-ingest-beellama" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并注册进 beellama</button>
   </div>
 </div>
 <div id="ingest-beellama-result" style="margin-top:10px;font-size:0.82rem;color:var(--text-dim);"></div>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
-💡 <b>使用流程</b>：从 HuggingFace 等下载的 .gguf 文件 (任意名称) 放到 <code>/data/ollama/models/blobs/</code> → 点击按钮 → 软链接到 <code>~/models/&lt;short_dir&gt;/</code> → 在「模型 & 参数」中可见 → beellama 加载
+💡 <b>使用流程</b>：从 HuggingFace 等下载的 .gguf 文件 (任意名称) 放到 <code>/data/ollama/models/blobs/</code> → 点击按钮 → 注册到 <code>~/models/&lt;short_dir&gt;/</code> → 在「模型 & 参数」中可见 → beellama 加载
 </p>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;">
 💡 <b>short_dir 映射</b>：qwen3.6-q3→qwen3.6-35b / qwen3.6-uncensored→qwen3.6-35b-uncensored / qwen3-vl→qwen3-vl / gemma-4-26b→gemma-4-26b / 其他→short_name
@@ -5379,12 +5379,12 @@ async function ingestBeellama() {
   resultDiv.innerHTML = '正在扫描 <code>/data/ollama/models/blobs/</code>...';
   try {
     showLoadStatus(true);
-    updateLoadStatusUI({ status: 'loading', message: '扫描并为 beellama 建立软链接...', progress: 10, elapsed_seconds: 0 });
+    updateLoadStatusUI({ status: 'loading', message: '扫描并注册进 beellama...', progress: 10, elapsed_seconds: 0 });
     const r = await fetchJSON('/api/ingest_beellama', 'POST', {});
-    updateLoadStatusUI({ status: 'loading', message: '建立软链接中...', progress: 60, elapsed_seconds: 1 });
+    updateLoadStatusUI({ status: 'loading', message: '注册中...', progress: 60, elapsed_seconds: 1 });
     let html = `<b>扫描到 ${r.scanned} 个未注册 .gguf</b><br>`;
     if (r.linked && r.linked.length > 0) {
-      html += '✅ <b>已建立软链接</b>：' + r.linked.map(item => 
+      html += '✅ <b>已注册进 beellama</b>：' + r.linked.map(item => 
         `<code>${item.dir}/${item.src}</code> → <code>${item.target.split('/').pop()}</code>`
       ).join('<br>') + '<br>';
     }
@@ -5397,11 +5397,11 @@ async function ingestBeellama() {
     resultDiv.innerHTML = html;
     updateLoadStatusUI({
       status: r.errors && r.errors.length > 0 ? 'error' : 'done',
-      message: r.errors && r.errors.length > 0 ? `⚠️ ${r.linked.length} 成功, ${r.errors.length} 失败` : `✅ 建立 ${r.linked.length} 个软链接`,
+      message: r.errors && r.errors.length > 0 ? `⚠️ ${r.linked.length} 成功, ${r.errors.length} 失败` : `✅ 注册 ${r.linked.length} 个模型到 beellama`,
       progress: 100,
       elapsed_seconds: 2
     });
-    showToast(r.linked && r.linked.length > 0 ? `✅ 已建立 ${r.linked.length} 个软链接` : 'ℹ️ 扫描完成 (无新文件)', r.errors && r.errors.length > 0 ? 'warning' : 'success', 5000);
+    showToast(r.linked && r.linked.length > 0 ? `✅ 已注册 ${r.linked.length} 个模型到 beellama` : 'ℹ️ 扫描完成 (无新文件)', r.errors && r.errors.length > 0 ? 'warning' : 'success', 5000);
     setTimeout(function() { showLoadStatus(false); }, 3000);
     // 重新拉取模型列表
     setTimeout(refresh, 1000);
@@ -5412,7 +5412,7 @@ async function ingestBeellama() {
     setTimeout(function() { showLoadStatus(false); }, 3000);
   } finally {
     btn.disabled = false;
-    btn.textContent = '📥 扫描并为 beellama 建立软链接';
+    btn.textContent = '📥 扫描并注册进 beellama';
   }
 }
 

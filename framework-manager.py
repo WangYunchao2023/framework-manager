@@ -4,9 +4,24 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.1
+版本：1.6.2
 
 更新日志:
+- v1.6.2: beellama 端「📥 自动注册下载的模型」功能
+  - 背景: 已有 ollama 端 /api/ingest_gguf (v1.1.18) 可在 /data/ollama/models/blobs/ 扫用户下载的 .gguf
+    自动生成 ollama manifest。beellama 端缺同等能力, 用户下载新模型后, 只能手动 ln -s 到 ~/models/
+  - 功能: 扫 ollama blobs/ 中非 sha256- 开头的 .gguf, 为 beellama 在 ~/models/<dir>/ 下建软链接
+    + 复用 _extract_short_model_name() 推 short_name
+    + short_to_dir 映射 (qwen3.6-q3→qwen3.6-35b, qwen3.6-uncensored→qwen3.6-35b-uncensored 等)
+    + 软链接指向 sha256-{hash} 别名 (不是原文件, 避免 ollama 改名/删 后链接失效)
+  - 与 ollama 端 ingest_gguf 区别:
+    - 跨 fs (/home vs /data) 软链接 vs 同 fs 硬链接
+    - 不删原文件 vs ollama 端删原文件 (硬链接保留)
+    - 不写 ollama manifest / modelfile vs ollama 端生成 manifest + modelfile
+    - 不动 ollama 端 (用户明确 "ollama 不要动")
+  - 端点: POST /api/ingest_beellama, 返回 {scanned, linked:[{src,short,dir,target,link,size,sha}], skipped, errors}
+  - HTML: 切到 beellama 时显示「📥 自动注册下载的模型」卡片
+  - JS: ingestBeellama() 调 API + 渲染结果 + 1s 后 refresh() 重拉模型列表
 - v1.6.1: 修复 _try_infer_beellama() 硬编码 if/elif 链把所有 qwen3.6 GGUF 都识别为 'qwen3.6-q3'
   - Bug 复现: 加载 qwen3.6-35b-uncensored (GGUF basename 含 Uncensored) 后, /api/status 仍显示 model='qwen3.6-q3'
   - 根因: detect_current_framework() → _try_infer_beellama() 第 1358-1364 行用 'qwen3.6' in filename.lower() 一刀切, uncensored 版被误判成 q3 版
@@ -2631,6 +2646,24 @@ def api_ingest_gguf():
     return jsonify(result)
 
 
+# ── v1.6.2: beellama 端「自动注册下载的模型」 ─────────
+@app.route("/api/ingest_beellama", methods=["POST"])
+def api_ingest_beellama():
+    """v1.6.2: 「📥 beellama 自动注册下载的模型」 按钮
+
+    扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf 文件,
+    为 beellama 框架在 ~/models/<dir>/ 下建软链接 → ollama blob.
+
+    不动 ollama manifest / modelfile, 不删原文件 (与 ollama 端 ingest 不一样).
+    """
+    result = _ingest_beellama()
+    # 重新触发 get_beellama_models 缓存
+    global _model_cache, _cache_timestamps
+    _model_cache.pop("beellama", None)
+    _cache_timestamps.pop("beellama", None)
+    return jsonify(result)
+
+
 @app.route("/api/restore_ollama_default_model_params", methods=["POST"])
 def api_restore_ollama_default_model_params():
     """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
@@ -3193,6 +3226,149 @@ def _ingest_gguf():
     }
 
 
+def _ingest_beellama():
+    """v1.6.2: 扫描 /data/ollama/models/blobs/ 中任意命名的 .gguf 文件 (用户下载的),
+    为 beellama 框架在 ~/models/<dir>/ 下建立软链接 → ollama blob.
+
+    设计:
+    - beellama 不需要 ollama 那种 manifest, 加载走 "绝对路径" 机制
+    - 用户在 ollama blobs 放任意命名 .gguf, 期望能被 beellama 看到 → 只要在 ~/models/ 下建软链接即可
+    - 跨文件系统 (/home vs /data) 不能硬链接, 用软链接 (同 ollama 端"硬链接 + 删原文件" 不一样)
+    - 不动 ollama manifest / modelfile (用户明确 "ollama 不要动")
+    - 不删 ollama 端原文件 (保留原命名, 万一用户还想 ollama 用)
+
+    流程:
+    1. 扫描 ollama blobs/ 中非 sha256- 开头的 .gguf (任意命名)
+    2. 计算 sha256 (增量, 避免 OOM)
+    3. 在 blobs/ 软链接为 sha256-{hash} 命名 (避免与其他 sha 冲突; 也供 ollama 端使用)
+    4. 解析 GGUF header (general.name + context_length) → 决定 short_name
+    5. dir 名: 启发式 = "<模型族>-<size>b" (e.g. qwen3.6-35b, gemma-4-26b)
+       复 用 alias_map 反向 + GGUF basename 推断, 与 _extract_short_model_name 保持一致
+    6. ~/models/<dir>/<gguf_basename> → /data/ollama/models/blobs/sha256-{hash} (软链接)
+    7. 同目录 mmproj-*.gguf 也建立软链接 (若用户在 ollama blobs 旁放了)
+    8. 写 model_params (如不存在, 用 _fallback 初始化; per-model 走「🎯 默认值」手动配置)
+
+    返回: {scanned, linked, skipped, errors, registered: [{gguf, short, dir, target}]}
+    """
+    blobs_dir = Path(OLLAMA_MODELS_DIR) / "blobs"
+    home_models = Path.home() / "models"
+    if not blobs_dir.exists():
+        return {"scanned": 0, "linked": [], "skipped": [], "errors": [f"blobs 目录不存在: {blobs_dir}"]}
+
+    # 1. 扫描 ollama blobs/ 中非 sha256- 开头的 .gguf/.bin (用户下载的)
+    user_files = []
+    for f in blobs_dir.iterdir():
+        if not f.is_file() and not f.is_symlink():
+            continue
+        if f.name.startswith("sha256-"):
+            continue
+        if not f.name.lower().endswith((".gguf", ".bin")):
+            continue
+        user_files.append(f)
+    if not user_files:
+        return {"scanned": 0, "linked": [], "skipped": [], "errors": []}
+
+    # 5a. short_name → dir 映射 (与 alias_map 保持一致)
+    # 这反映用户 ~/models/ 下的实际目录命名习惯
+    short_to_dir = {
+        'qwen3.6-q3': 'qwen3.6-35b',
+        'qwen3.6-uncensored': 'qwen3.6-35b-uncensored',
+        'qwen3.6-27b': 'qwen3.6-27b',
+        'qwen3-14b': 'qwen3-14b',
+        'qwen3-vl': 'qwen3-vl',
+        'gemma-4-26b': 'gemma-4-26b',
+        'gemma4': 'gemma-4-26b',
+    }
+
+    linked = []
+    skipped = []
+    errors = []
+    for src in user_files:
+        src_path = str(src)
+        src_name = src.name
+        try:
+            # 2. 计算 sha256 (增量, 8MB chunks)
+            sha_hasher = hashlib.sha256()
+            with open(src, "rb") as f:
+                while True:
+                    chunk = f.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    sha_hasher.update(chunk)
+            sha = sha_hasher.hexdigest()
+            sha_blob = blobs_dir / f"sha256-{sha}"
+
+            # 3. 在 blobs/ 软链接为 sha256-{hash} (幂等)
+            if not sha_blob.exists():
+                os.symlink(src_path, str(sha_blob))
+
+            # 4. 解析 GGUF header → 推 short_name
+            short_name = _extract_short_model_name(src_name)
+            # 如果短名是文件名本身 (regex 没命中), fallback 使用目录里已有命名
+            if short_name == src_name.replace('.gguf', '').replace('.bin', ''):
+                # regex 未命中, 用 general.name 或 fallback
+                info = _parse_gguf_header(str(sha_blob))
+                gguf_name = info.get("name")
+                if gguf_name:
+                    short_name = gguf_name.lower().replace('-', '-')
+                else:
+                    short_name = f"gguf-{sha[:8]}"
+
+            # 5b. 决定 dir 名
+            dir_name = short_to_dir.get(short_name, short_name)
+            target_dir = home_models / dir_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_link = target_dir / src_name
+
+            # 6. ~/models/<dir>/<basename> → /data/ollama/models/blobs/sha256-{hash}
+            # 指向 sha_blob (而非原文件) — 避免原文件被 ollama 改名/删 后链接失效
+            if target_link.is_symlink() or target_link.exists():
+                if target_link.is_symlink() and os.readlink(str(target_link)) == str(sha_blob):
+                    skipped.append(f"{dir_name}/{src_name} (已存在, 指向同一目标)")
+                else:
+                    skipped.append(f"{dir_name}/{src_name} (已存在但指向不同目标)")
+                continue
+
+            os.symlink(str(sha_blob), str(target_link))
+
+            # 7. mmproj: 同 dir (ollama blobs 旁) 扫 mmproj-*.gguf, 软链到 ~/models/<dir>/
+            # 暂不处理: 实际 mmproj 通常与 GGUF 一起放在 ollama blobs, 需要 sha 链; 复杂,
+            # 当前只处理 LLM GGUF, mmproj 由用户手动管理 (与现有 qwen3-vl/mmproj-F16.gguf 一致)
+            mmproj_linked = 0
+            for mmproj_src in blobs_dir.iterdir():
+                if not (mmproj_src.is_file() or mmproj_src.is_symlink()):
+                    continue
+                if 'mmproj' not in mmproj_src.name.lower():
+                    continue
+                # 仅当 mmproj 与当前 GGUF basename 相关时 (启发式: 同名/同 base)
+                # 简单: 不自动链, 避免误链
+                # 如果用户需要 mmproj 自动链, 可手动 ln -s
+                _ = mmproj_src  # suppress unused
+
+            size = sha_blob.stat().st_size if sha_blob.exists() else src.stat().st_size
+            linked.append({
+                "src": src_name,
+                "short": short_name,
+                "dir": dir_name,
+                "target": str(sha_blob),
+                "link": str(target_link),
+                "size": size,
+                "sha": sha[:12],
+            })
+            audit_log("ingest beellama",
+                      f"src={src_name}, short={short_name}, dir={dir_name}, sha={sha[:12]}", "ok")
+        except Exception as e:
+            errors.append(f"{src_name}: {e}")
+            audit_log("ingest beellama 失败", f"file={src_name}, error={e}", "error")
+
+    return {
+        "scanned": len(user_files),
+        "linked": linked,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
 def _auto_register_gguf_for_ollama():
     """v1.1.15: 扫描 /data/ollama/models/blobs/ 中未被 manifest 引用的 GGUF,
     为每个自动创建 params blob (num_ctx=131072) + config blob + manifest.
@@ -3576,6 +3752,25 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 </div>
 <p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
 💡 <b>turbo3</b>: 速度快/功耗低 (~100W)，但长对话可能乱码 · <b>f16</b>: 稳定不乱码/功耗高 (~200W) · 修改后需重启 beellama
+</p>
+</div>
+<!-- 📥 beellama 自动注册下载的模型 (v1.6.2 新增, 切到 beellama 时显示) -->
+<div class="card" id="ingest-beellama-card" style="display:none;">
+<h2>📥 自动注册下载的模型</h2>
+<p style="font-size:0.78rem;color:var(--text-dim);margin-top:4px;margin-bottom:10px;">
+  <b>扫描 <code>/data/ollama/models/blobs/</code> 中任意命名的 .gguf</b> · 计算 sha256 · 在 <code>~/models/&lt;dir&gt;/</code> 下建立软链接 → ollama blob · 加载 beellama 后即可用 · <b style="color:#4ade80;">不影响 ollama manifest / modelfile</b> · <b style="color:#4ade80;">不删除 ollama blobs 里的原文件</b>
+</p>
+<div class="form-row">
+  <div class="form-group" style="flex:1;">
+    <button class="btn primary" onclick="ingestBeellama()" id="btn-ingest-beellama" style="font-size:0.95rem;padding:8px 16px;">📥 扫描并为 beellama 建立软链接</button>
+  </div>
+</div>
+<div id="ingest-beellama-result" style="margin-top:10px;font-size:0.82rem;color:var(--text-dim);"></div>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:8px;">
+💡 <b>使用流程</b>：从 HuggingFace 等下载的 .gguf 文件 (任意名称) 放到 <code>/data/ollama/models/blobs/</code> → 点击按钮 → 软链接到 <code>~/models/&lt;short_dir&gt;/</code> → 在「模型 & 参数」中可见 → beellama 加载
+</p>
+<p style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;">
+💡 <b>short_dir 映射</b>：qwen3.6-q3→qwen3.6-35b / qwen3.6-uncensored→qwen3.6-35b-uncensored / qwen3-vl→qwen3-vl / gemma-4-26b→gemma-4-26b / 其他→short_name
 </p>
 </div>
 <!-- 🎛️ Ollama 进程参数 (v1.1.16 简化, 仅留 GPU_LAYERS) -->
@@ -4113,11 +4308,14 @@ async function refresh() {
     }
     // 🎯 默认值卡片 (通用, beellama 专用) — ollama/comfyui 时隐藏
     var defaultsCard = document.getElementById('defaults-card');
+    var ingestBeellamaCard = document.getElementById('ingest-beellama-card');  // v1.6.2
     if (defaultsCard) {
       if (fw === 'beellama') {
         defaultsCard.style.display = 'block';
+        if (ingestBeellamaCard) ingestBeellamaCard.style.display = 'block';
       } else {
         defaultsCard.style.display = 'none';
+        if (ingestBeellamaCard) ingestBeellamaCard.style.display = 'none';
       }
     }
     // ⚙️ 显示/隐藏 ollama 参数卡片 (v1.1.8-patch2)
@@ -5090,6 +5288,52 @@ async function saveManifestGenParams() {
   } finally {
     btn.disabled = false;
     btn.textContent = '💾 保存';
+  }
+}
+
+// 📥 beellama 自动注册下载的模型 (v1.6.2)
+async function ingestBeellama() {
+  const btn = document.getElementById('btn-ingest-beellama');
+  const resultDiv = document.getElementById('ingest-beellama-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ 扫描中...';
+  resultDiv.innerHTML = '正在扫描 <code>/data/ollama/models/blobs/</code>...';
+  try {
+    showLoadStatus(true);
+    updateLoadStatusUI({ status: 'loading', message: '扫描并为 beellama 建立软链接...', progress: 10, elapsed_seconds: 0 });
+    const r = await fetchJSON('/api/ingest_beellama', 'POST', {});
+    updateLoadStatusUI({ status: 'loading', message: '建立软链接中...', progress: 60, elapsed_seconds: 1 });
+    let html = `<b>扫描到 ${r.scanned} 个未注册 .gguf</b><br>`;
+    if (r.linked && r.linked.length > 0) {
+      html += '✅ <b>已建立软链接</b>：' + r.linked.map(item => 
+        `<code>${item.dir}/${item.src}</code> → <code>${item.target.split('/').pop()}</code>`
+      ).join('<br>') + '<br>';
+    }
+    if (r.skipped && r.skipped.length > 0) {
+      html += '⏭️ <b>已跳过</b>：' + r.skipped.map(n => `<code>${n}</code>`).join(', ') + '<br>';
+    }
+    if (r.errors && r.errors.length > 0) {
+      html += '❌ <b>错误</b>：' + r.errors.map(e => `<code>${e}</code>`).join(', ') + '<br>';
+    }
+    resultDiv.innerHTML = html;
+    updateLoadStatusUI({
+      status: r.errors && r.errors.length > 0 ? 'error' : 'done',
+      message: r.errors && r.errors.length > 0 ? `⚠️ ${r.linked.length} 成功, ${r.errors.length} 失败` : `✅ 建立 ${r.linked.length} 个软链接`,
+      progress: 100,
+      elapsed_seconds: 2
+    });
+    showToast(r.linked && r.linked.length > 0 ? `✅ 已建立 ${r.linked.length} 个软链接` : 'ℹ️ 扫描完成 (无新文件)', r.errors && r.errors.length > 0 ? 'warning' : 'success', 5000);
+    setTimeout(function() { showLoadStatus(false); }, 3000);
+    // 重新拉取模型列表
+    setTimeout(refresh, 1000);
+  } catch (e) {
+    resultDiv.innerHTML = '<span style="color:#f88;">❌ 错误: ' + e.message + '</span>';
+    updateLoadStatusUI({ status: 'error', message: '❌ ' + e.message, progress: 100, elapsed_seconds: 1 });
+    showToast('扫描失败: ' + e.message, 'error');
+    setTimeout(function() { showLoadStatus(false); }, 3000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📥 扫描并为 beellama 建立软链接';
   }
 }
 

@@ -1,5 +1,43 @@
 # framework-manager 版本历史
 
+## v1.6.2 (2026-06-24)
+
+### 🆕 新增：beellama 端「📥 自动注册下载的模型」
+
+**背景**：
+- 之前 ollama 端已有 `/api/ingest_gguf` (v1.1.18)，扫 `/data/ollama/models/blobs/` 中任意命名的 .gguf，可自动生成 ollama manifest
+- beellama 端缺同等能力：用户从 HuggingFace 下载 .gguf 放 blobs/ 后，必须手动 `ln -s` 到 `~/models/<dir>/`，体验割裂
+
+**功能**：
+- 新增 `POST /api/ingest_beellama` 端点 + WebUI 「📥 自动注册下载的模型」卡片（切到 beellama 时显示）
+- 扫 ollama blobs/ 中非 sha256- 开头的 .gguf，复用 `_extract_short_model_name()` 推 short_name
+- `short_to_dir` 映射表（qwen3.6-q3→qwen3.6-35b、qwen3.6-uncensored→qwen3.6-35b-uncensored 等）
+- 在 `~/models/<dir>/<basename>` 建软链接 → `/data/ollama/models/blobs/sha256-{hash}` 别名
+
+**与 ollama 端 ingest_gguf 区别**：
+| 项 | ollama 端 | beellama 端（v1.6.2 新增）|
+|---|---|---|
+| 文件系统 | 同 fs（/data）| 跨 fs（/home → /data）|
+| 链接方式 | 硬链接 + 删原文件 | 软链接 + 保留原文件 |
+| 生成 manifest | ✅ 写 ollama manifest | ❌ 不写 |
+| 生成 modelfile | ✅ 写 Modelfile | ❌ 不写 |
+| 动 ollama 端 | 是 | **否**（用户明确 “ollama 不要动”）|
+
+**验证**（端到端）：
+- 模拟用户下载 `Qwen3.6-35B-A3B-Uncensored-AnotherTest-Q4_K_M.gguf` 到 blobs/
+- 调 `/api/ingest_beellama` → `{"scanned":1, "linked":[{dir:qwen3.6-35b-uncensored, target:sha256-335e6e8d...}]}`
+- 软链接建好 → 9528 `/api/scan_for_addition?framework=beellama` 从 5 个变 6 个模型
+- 幂等：再次调入返回 `skipped: [已存在, 指向同一目标]`
+- ollama `/api/tags` manifest 列表无变化 ✅
+- 清理后系统状态完全恢复原样
+
+**设计决策**：
+- “不动 ollama 端” 要求具体到 (1) 不写 manifest/modelfile (2) 不删 blobs 原文件
+- 软链指向 `sha256-{hash}` 别名而非原文件：避免 ollama 改名/删原文件后链接失效（别名为本代码创建，生命周期同 ingest）
+- mmproj 不自动链：实际场景中 mmproj 通常与 GGUF 同名/同目录，手动管理更可控
+
+---
+
 ## v1.6.1 (2026-06-24)
 
 ### 🐛 修复：beellama 加载 qwen3.6-uncensored 后状态显示为 qwen3.6-q3

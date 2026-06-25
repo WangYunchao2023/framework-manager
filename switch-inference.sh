@@ -235,7 +235,7 @@ switch_to_beellama() {
   [ -n "$turbo_level" ] && echo "  TurboQuant: ✅ turbo${turbo_level}" || echo "  TurboQuant: ❌ 关闭"
 
   # 等待 health 端点就绪（含模型加载时间）
-  local max_wait=150
+  local max_wait=200
   local waited=0
   echo -n "  等待就绪"
   while [ $waited -lt $max_wait ]; do

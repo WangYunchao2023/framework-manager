@@ -410,3 +410,174 @@
 [2026-06-23 22:14:42] task_auto_done       | beellama/qwen3-14b task_id=v16-fina failed         | ok
 [2026-06-23 22:15:06] task_register        | beellama/qwen3-14b task_id=v16-real auto_detect=True | ok
 [2026-06-23 22:15:18] task_auto_done       | beellama/qwen3-14b task_id=v16-real success        | ok
+[2026-06-24 08:55:43] 扫描可用模型               | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-24 08:57:27] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 09:01:43] 扫描可用模型               | framework=beellama, total=4, visible=4, hidden=0   | ok
+[2026-06-24 09:05:54] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=1     | ok
+[2026-06-24 09:07:47] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:10:25] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:13:04] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:23:39] 加载模型                 | beellama/qwen3.6-q3                                | ok
+[2026-06-24 09:26:06] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:39:20] 切换框架                 | → ollama                                           | ok
+[2026-06-24 09:42:17] 切换框架                 | → beellama                                         | ok
+[2026-06-24 09:42:34] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:42:55] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 09:49:08] ingest beellama      | src=MockUserDownload-Qwen3.6-TestModel.gguf, short=qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive, dir=qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive, sha=23d3db177fc5 | ok
+[2026-06-24 09:49:32] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 09:49:39] ingest beellama      | src=Qwen3.6-35B-A3B-NewVariantTest-Q4_K_M.gguf, short=qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive, dir=qwen3.6-35b-a3b-uncensored-hauhaucs-aggressive, sha=335e6e8d5cf5 | ok
+[2026-06-24 09:49:54] ingest beellama      | src=Qwen3.6-35B-A3B-Uncensored-AnotherTest-Q4_K_M.gguf, short=qwen3.6-uncensored, dir=qwen3.6-35b-uncensored, sha=335e6e8d5cf5 | ok
+[2026-06-24 09:49:54] 扫描可用模型               | framework=beellama, total=6, visible=6, hidden=0   | ok
+[2026-06-24 09:50:07] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 10:10:07] ingest beellama      | src=Qwen3.6-35B-A3B-Uncensored-IngestTest-v3.gguf, short=qwen3.6-uncensored, dir=qwen3.6-35b-uncensored, sha=335e6e8d5cf5, per_model={'created': False, 'ctx_size': 131072, 'parallel': 1, 'ngpu_layers': 99} | ok
+[2026-06-24 10:10:29] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 10:19:20] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 10:19:25] 设置可见模型列表             | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 10:35:06] 保存默认值文件              | fallback={'ctx_size': 65536, 'parallel': 4, 'ngpu_layers': 50}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-24 10:35:16] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-24 10:35:16] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-24 10:35:23] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-24 10:46:02] ingest beellama      | src=Qwen3.6-35B-A3B-Uncensored-DefaultTest1-Q4_K_M.gguf, short=qwen3.6-uncensored, dir=qwen3.6-35b-uncensored, sha=335e6e8d5cf5, per_model={'created': False, 'ctx_size': 131072, 'parallel': 1, 'ngpu_layers': 99} | ok
+[2026-06-24 10:46:09] 扫描可用模型               | framework=beellama, total=6, visible=6, hidden=0   | ok
+[2026-06-24 10:56:31] ingest beellama      | src=Qwen3.6-35B-A3B-Uncensored-SyncTest1-Q4_K_M.gguf, short=qwen3.6-uncensored, dir=qwen3.6-35b-uncensored, sha=335e6e8d5cf5, per_model={'created': False, 'ctx_size': 131072, 'parallel': 1, 'ngpu_layers': 99} | ok
+[2026-06-24 10:58:25] ingest beellama      | src=Qwen3.6-35B-A3B-Uncensored-CacheTest2-Q4_K_M.gguf, short=qwen3.6-uncensored, dir=qwen3.6-35b-uncensored, sha=335e6e8d5cf5, per_model={'created': False, 'ctx_size': 131072, 'parallel': 1, 'ngpu_layers': 99} | ok
+[2026-06-24 11:24:13] 设置 beellama 全局参数     | turbo=, fa=True, reasoning=False                   | ok
+[2026-06-24 11:24:16] 切换框架                 | → beellama                                         | ok
+[2026-06-24 11:24:51] 设置 beellama 全局参数     | turbo=, fa=True, reasoning=False                   | ok
+[2026-06-24 11:24:54] 切换框架                 | → beellama                                         | ok
+[2026-06-24 11:24:54] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 11:25:24] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 12:30:26] 设置 beellama 模型参数     | model=qwen3.6-uncensored, ctx=None, parallel=2, ngl=None | ok
+[2026-06-24 12:34:32] 保存默认值文件              | fallback={'ctx_size': 131072, 'parallel': 2, 'ngpu_layers': 99}, models=['gemma-4-26b', 'qwen3-14b', 'qwen3-vl', 'qwen3.6-q3', 'qwen3.6-uncensored'] | ok
+[2026-06-24 12:34:36] 扫描可用模型               | framework=beellama, total=5, visible=5, hidden=0   | ok
+[2026-06-24 12:34:58] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 12:40:30] 切换框架                 | → ollama                                           | ok
+[2026-06-24 12:40:38] 切换框架                 | → beellama                                         | ok
+[2026-06-24 12:41:11] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 12:45:15] 保存并应用参数              | model=qwen3.6-uncensored, ctx=131072, parallel=1, ngl=99 | ok
+[2026-06-24 12:45:32] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 12:45:32] 自动重载                 | model=qwen3.6-uncensored                           | ok
+[2026-06-24 13:20:33] 保存并应用参数              | model=qwen3.6-uncensored, ctx=131072, parallel=1, ngl=99 | ok
+[2026-06-24 13:20:50] 加载模型                 | beellama/qwen3.6-uncensored                        | ok
+[2026-06-24 13:20:50] 自动重载                 | model=qwen3.6-uncensored                           | ok
+[2026-06-24 13:24:07] 切换框架                 | → ollama                                           | ok
+[2026-06-24 13:26:55] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 13:56:48] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=1     | ok
+[2026-06-24 15:14:14] 切换框架                 | → ollama                                           | ok
+[2026-06-24 15:16:03] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-24 15:17:31] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 15:22:19] 加载模型                 | Ollama/qwen3.6-q3-uncensored:ctx128k               | ok
+[2026-06-24 16:17:56] 切换框架                 | → ollama                                           | ok
+[2026-06-24 16:18:52] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 16:37:23] 保存 新模型注册参数           | params={'temperature': 0.7, 'stop': ['<|im_end|>', '<|endoftext|>'], 'top_k': 20, 'top_p': 0.95, 'num_ctx': 131072, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:37:23] 保存 新模型注册参数           | params={'temperature': 0.7, 'stop': [], 'top_k': 20, 'top_p': 0.95, 'num_ctx': 131072, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:37:42] 保存 新模型注册参数           | params={'temperature': 0.7, 'stop': ['<|im_end|>', '<|endoftext|>'], 'top_k': 20, 'top_p': 0.95, 'num_ctx': 131072, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:38:57] 保存 新模型注册参数           | params={'num_ctx': 131072, 'top_k': 20, 'top_p': 0.95, 'temperature': 0.7, 'repeat_penalty': 1.0, 'stop': ['<|im_end|>', '<|endoftext|>']} | ok
+[2026-06-24 16:38:57] 保存 新模型注册参数           | params={'stop': ['<eos>', '<|im_end|>', '<|endoftext|>'], 'num_ctx': 131072, 'temperature': 0.7, 'top_p': 0.95, 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:38:57] 保存 新模型注册参数           | params={'stop': ['<|im_end|>'], 'num_ctx': 131072, 'temperature': 0.7, 'top_p': 0.95, 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:39:17] 保存 新模型注册参数           | params={'num_ctx': 131072, 'top_k': 20, 'temperature': 0.7, 'top_p': 0.95, 'repeat_penalty': 1.0, 'stop': ['<|im_end|>', '<|endoftext|>']} | ok
+[2026-06-24 16:40:37] 保存 新模型注册参数           | params={'num_ctx': 131072, 'top_k': 20, 'temperature': 0.7, 'top_p': 0.95, 'repeat_penalty': 1.0, 'stop': ['<|im_end|>', '<|endoftext|>']} | ok
+[2026-06-24 16:41:18] 保存 新模型注册参数           | params={'top_p': 0.95, 'temperature': 0.7, 'num_ctx': 131072, 'stop': ['<|im_end|>', 'EOS_TOKEN'], 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:42:10] 保存 新模型注册参数           | params={'stop': ['<|im_end|>', '<|endoftext|>'], 'num_ctx': 131072, 'temperature': 0.7, 'top_p': 0.95, 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:42:10] 保存 新模型注册参数           | params={'stop': [], 'num_ctx': 131072, 'temperature': 0.7, 'top_p': 0.95, 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:42:10] 保存 新模型注册参数           | params={'stop': ['good'], 'num_ctx': 131072, 'temperature': 0.7, 'top_p': 0.95, 'top_k': 20, 'repeat_penalty': 1.0} | ok
+[2026-06-24 16:42:36] ingest GGUF          | name=gguf-04fbb0ca:ctx128k, size=205, sha=04fbb0ca7ee1, gguf_ctx=None | ok
+[2026-06-24 17:36:32] GGUF 注册              | name=gguf-24e509d1:ctx128k, arch=None, stop_source=none, stop=[] | ok
+[2026-06-24 17:36:32] ingest GGUF          | name=gguf-24e509d1:ctx128k, size=379, sha=24e509d19f74, gguf_ctx=None | ok
+[2026-06-24 17:38:01] GGUF 注册              | name=Test Gemma4 Model:ctx32k, arch=gemma4, stop_source=auto_family[gemma4], stop=['<end_of_turn>', '<start_of_turn>', '<eos>'] | ok
+[2026-06-24 17:38:01] ingest GGUF          | name=Test Gemma4 Model:ctx32k, size=356, sha=9f3cbf84b9a5, gguf_ctx=32768 | ok
+[2026-06-24 17:39:35] GGUF 注册              | name=Test Qwen3 14B:ctx40k, arch=qwen3, stop_source=auto_family[qwen3], stop=['<|im_end|>', '<|endoftext|>'] | ok
+[2026-06-24 17:39:35] ingest GGUF          | name=Test Qwen3 14B:ctx40k, size=351, sha=a05160d3e9a3, gguf_ctx=40960 | ok
+[2026-06-24 17:40:14] GGUF 注册              | name=Test Qwen3 14B:ctx40k, arch=qwen3, stop_source=user_config, stop=['<|user_custom|>'] | ok
+[2026-06-24 17:40:14] ingest GGUF          | name=Test Qwen3 14B:ctx40k, size=351, sha=a05160d3e9a3, gguf_ctx=40960 | ok
+[2026-06-24 17:40:26] GGUF 注册              | name=Random Model XYZ:ctx2k, arch=unknownmodel, stop_source=none, stop=[] | ok
+[2026-06-24 17:40:26] ingest GGUF          | name=Random Model XYZ:ctx2k, size=367, sha=1b0e42347cf4, gguf_ctx=2048 | ok
+[2026-06-24 17:40:54] 自动注册 GGUF 失败         | sha=669348c48b29, error=name 'manifest_params' is not defined | error
+[2026-06-24 17:41:46] GGUF 自动注册            | model=auto-669348c4, arch=qwen3, stop_source=auto_family[qwen3], stop=['<|im_end|>', '<|endoftext|>'] | ok
+[2026-06-24 17:41:46] 自动注册 GGUF            | name=auto-669348c4:ctx128k, size=360, sha=669348c48b29 | ok
+[2026-06-24 17:56:08] 设置 Ollama 转发设置       | merge_thinking=True                                | ok
+[2026-06-24 17:56:09] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 17:56:21] 设置 Ollama 转发设置       | merge_thinking=True                                | ok
+[2026-06-24 17:56:23] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 17:56:48] 切换框架                 | → beellama                                         | ok
+[2026-06-24 19:00:53] 切换框架                 | → ollama                                           | ok
+[2026-06-24 19:01:21] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 19:01:26] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 19:02:51] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 19:05:43] 设置 Ollama 转发设置       | merge_thinking=True                                | ok
+[2026-06-24 19:05:54] 保存 Ollama 全局参数       | params={'num_parallel': 1, 'keep_alive': '-1', 'gpu_layers': 35, 'batch_size': None, 'flash_attention': 1} | ok
+[2026-06-24 19:08:44] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 19:08:48] 设置 Ollama 转发设置       | merge_thinking=False                               | ok
+[2026-06-24 19:11:30] 设置 Ollama 转发设置       | merge_thinking=True                                | ok
+[2026-06-24 19:12:06] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=1     | ok
+[2026-06-24 19:13:10] 切换框架                 | → ollama                                           | ok
+[2026-06-24 19:14:58] 加载模型                 | Ollama/qwen3:14b-ctx64k                            | ok
+[2026-06-24 19:19:03] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-24 19:43:04] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 19:49:11] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-24 20:00:54] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:01:08] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 20:10:13] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-24 20:14:03] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-24 20:25:18] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:25:50] 加载模型                 | Ollama/qwen3:14b-ctx64k                            | ok
+[2026-06-24 20:25:53] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:26:57] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 20:27:01] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:28:59] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:29:12] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-24 20:29:21] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:29:29] 加载模型                 | Ollama/qwen3:14b-ctx64k                            | ok
+[2026-06-24 20:29:38] 切换框架                 | → ollama                                           | ok
+[2026-06-24 20:30:21] 加载模型                 | Ollama/qwen3.6-q3:ctx128k                          | ok
+[2026-06-25 08:31:09] 保存 ollama 模型参数       | model=gemma4:26b-ctx64k, tag=gemma4:ctx64k, ok=True | ok
+[2026-06-25 08:44:02] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, ok=False   | fail
+[2026-06-25 08:46:26] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx256k, ok=False  | fail
+[2026-06-25 09:11:50] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, ok=False   | fail
+[2026-06-25 09:43:55] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=a7965d3bea0e, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 09:45:03] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=a7965d3bea0e, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 09:45:52] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx128k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k (ollama list 中是否有 gemma4:ctx128k? 创建模型后才能修改参数) | fail
+[2026-06-25 09:45:53] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=6ed13811c9e6, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 09:51:01] 加载模型                 | Ollama/gemma4:26b-ctx64k                           | ok
+[2026-06-25 10:18:26] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=5390115a4e2a, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:18:27] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx64k, removed=['gemma4:26b-ctx64k'] | ok
+[2026-06-25 10:20:19] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=1     | ok
+[2026-06-25 10:20:19] GGUF 自动注册            | model=auto-4c27e0f5, arch=gemma4, stop_source=auto_family[gemma4], stop=['<end_of_turn>', '<start_of_turn>', '<eos>'] | ok
+[2026-06-25 10:20:19] 自动注册 GGUF            | name=auto-4c27e0f5:ctx128k, size=9608338848, sha=4c27e0f5b5ad | ok
+[2026-06-25 10:20:19] 扫描可用模型               | framework=ollama, total=6, visible=5, hidden=1     | ok
+[2026-06-25 10:22:38] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx128k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k (ollama list 中是否有 gemma4:ctx128k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:31:21] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx128k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k (ollama list 中是否有 gemma4:ctx128k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:31:29] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=5390115a4e2a, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:31:46] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx256k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx256k (ollama list 中是否有 gemma4:ctx256k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:31:51] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:31:52] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:31:56] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx8k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx8k (ollama list 中是否有 gemma4:ctx8k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:32:41] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=5390115a4e2a, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:33:49] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=2f880f540286, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:34:39] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=80436bf8bfea, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:35:41] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=a7965d3bea0e, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:37:19] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:37:20] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=a7965d3bea0e, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:37:43] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:38:11] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx64k, params_blob=a7965d3bea0e, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 10:38:32] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx8k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx8k (ollama list 中是否有 gemma4:ctx8k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:38:46] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:39:18] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:39:18] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx128k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k (ollama list 中是否有 gemma4:ctx128k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:42:33] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, error=manifest 不存在: /data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k (ollama list 中是否有 gemma4:ctx32k? 创建模型后才能修改参数) | fail
+[2026-06-25 10:55:26] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx32k, params_blob=da9b6e057457, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k | ok
+[2026-06-25 10:55:26] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx32k, removed=['gemma4:ctx64k'] | ok
+[2026-06-25 10:55:44] 保存 ollama 模型参数       | model=gemma4:ctx32k, tag=gemma4:ctx128k, params_blob=dd7080aba492, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k | ok
+[2026-06-25 10:55:45] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx128k, removed=['gemma4:ctx32k'] | ok
+[2026-06-25 10:59:27] 保存 ollama 模型参数       | model=gemma4:ctx128k, tag=gemma4:ctx256k, params_blob=e575abf6c76f, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx256k | ok
+[2026-06-25 10:59:28] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx256k, removed=['gemma4:ctx128k'] | ok
+[2026-06-25 10:59:58] 保存 ollama 模型参数       | model=gemma4:ctx256k, tag=gemma4:ctx32k, params_blob=677e10865f03, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k | ok
+[2026-06-25 10:59:59] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx32k, removed=['gemma4:ctx256k'] | ok
+[2026-06-25 11:01:54] 加载模型                 | Ollama/qwen3:14b-ctx64k                            | ok
+[2026-06-25 11:04:32] 保存 ollama 模型参数       | model=qwen3:14b-ctx64k, tag=qwen3:ctx128k, params_blob=a52b03252d57, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/qwen3/ctx128k | ok
+[2026-06-25 11:04:32] 清理同 base 旧 tag       | base=qwen3, kept=qwen3:ctx128k, removed=['qwen3:14b-ctx64k'] | ok
+[2026-06-25 11:05:58] 保存 ollama 模型参数       | model=gemma4:ctx32k, tag=gemma4:ctx32k, params_blob=6a48cd1528fe, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx32k | ok
+[2026-06-25 11:13:20] 保存 ollama 模型参数       | model=gemma4:ctx32k, tag=gemma4:ctx64k, params_blob=2f880f540286, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx64k | ok
+[2026-06-25 11:13:21] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx64k, removed=['gemma4:ctx32k'] | ok
+[2026-06-25 11:13:53] 保存 ollama 模型参数       | model=gemma4:ctx64k, tag=gemma4:ctx128k, params_blob=413fe3b3a564, manifest=/data/ollama/models/manifests/registry.ollama.ai/library/gemma4/ctx128k | ok
+[2026-06-25 11:13:53] 清理同 base 旧 tag       | base=gemma4, kept=gemma4:ctx128k, removed=['gemma4:ctx64k'] | ok

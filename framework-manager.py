@@ -4,9 +4,15 @@ REST API + WebUI, 端口 9528
 支持：Ollama ↔ beellama ↔ comfyui 切换，模型热切换
 CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
 
-版本：1.6.2-patch4
+版本：1.9.0
 
 更新日志:
+- v1.9.0: 「📦 Ollama 模型专属参数」重写 (2026-06-25)
+  - POST 不走 Modelfile + ollama create, 直写 params blob + 改 manifest layer digest
+  - 目标 manifest 不存在 → 从原 model 复制 model/license layers 创建
+  - 改 num_ctx 后同 base 旧 tag 自动 ollama rm (一模型一入口)
+  - 改完后强制 unload + reload (ollama 不会重读已加载 params)
+  - 前端 fetchJSON 不吞 error body, loadOllamaModelParams 加 currentModel 缓存
 - v1.6.2-patch4: 默认设置下拉复用主下拉数据源 (统一/避免两处维护)
   - 背景: 默认设置卡和主下拉独立拉 /api/models_by_framework, 两处数据各走各的
     - 隐藏模型仅过滤主下拉, 默认设置下拉还是显示已隐藏的
@@ -212,7 +218,7 @@ CLI 模式：python3 framework-manager.py status|ollama|beellama|comfyui [model]
     - num_ctx 改变会创建新 tag (e.g. ctx128k→ctx256k), 调 ollama create 重建
     - 旧 tag 不删 (用户手动选择)
   - defaults: /api/ollama_defaults (GET/POST) - 复用 framework-manager-defaults.json 的 ollama 段
-  - 恢复默认: /api/restore_ollama_default_model_params (POST) - 读 defaults → 写 Modelfile → 重建 tag
+  - 恢复默认: /api/restore_ollama_default_model_params (POST) - 读 defaults → 直接改 params blob + manifest (v1.9.0)
   - HTML: 「⚙️ Ollama 全局参数」+「📦 Ollama 模型专属参数」+「🎯 Ollama 默认值」三卡片 (仅切到 ollama 时显示)
   - 未动: beellama / comfyui / ollama 加载模型 / ollama system service pipeline
 - v1.1.8-patch1: ComfyUI 启动参数 + 模型路径管理
@@ -1424,6 +1430,247 @@ def _create_ollama_tag_from_modelfile(modelfile_path, tag_name):
         return False, f"ollama create 失败: {e}"
 
 
+# ── v1.9.0: 直接改 params blob + manifest (不调 ollama create) ─────────────────────────────
+
+def _manifest_path_for_model(model_name):
+    """model_name (如 gemma4:ctx64k) → manifest 文件路径
+    规则: registry/ollama.ai/library/{base_name}/{tag_suffix}
+    tag_suffix 是 model_name ':' 后面的部分, 去掉前导 ':'
+    例: 'qwen3.6-q3:ctx128k' -> base=qwen3.6-q3, suffix=ctx128k
+         'gemma4:26b-ctx64k'  -> base=gemma4,        suffix=26b-ctx64k
+         'qwen3:14b-ctx64k'   -> base=qwen3,         suffix=14b-ctx64k
+    """
+    if ':' not in model_name:
+        raise ValueError(f"model_name 必须带 tag (:xxx) 后缀: {model_name}")
+    base, _, suffix = model_name.partition(':')
+    return Path(OLLAMA_MODELS_DIR) / "manifests" / "registry.ollama.ai" / "library" / base / suffix
+
+
+def _read_ollama_params_from_blob(model_name):
+    """v1.9.0: 从 params blob 读参数 (返回 dict 或 None)
+    流程: manifest -> params layer digest -> sha256-{digest}.txt / read
+    任意一步失败返 None (不抛异常)
+    """
+    try:
+        manifest_path = _manifest_path_for_model(model_name)
+        if not manifest_path.exists():
+            return None
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+        # 找 params layer
+        params_layer = None
+        for layer in manifest.get("layers", []):
+            if "params" in layer.get("mediaType", ""):
+                params_layer = layer
+                break
+        if not params_layer:
+            return None
+        digest = params_layer.get("digest", "").replace("sha256:", "")
+        if not digest:
+            return None
+        blob_path = Path(OLLAMA_MODELS_DIR) / "blobs" / f"sha256-{digest}"
+        if not blob_path.exists():
+            return None
+        raw = blob_path.read_bytes()
+        # ollama params blob 末尾可能有填充 NULL 字节
+        raw = raw.rstrip(b"\x00")
+        return json.loads(raw)
+    except Exception as e:
+        log.warning(f"_read_ollama_params_from_blob({model_name}) 失败: {e}")
+        return None
+
+
+def _write_ollama_params_blob_and_manifest(model_name, new_tag, new_params):
+    """v1.9.0: 直接重写 params blob + 改对应 manifest 文件
+
+    Args:
+        model_name: 原 model 名 (用于读现有 params, 拿保留值)
+        new_tag:    新 tag (会决定 manifest 文件路径, 可与 model_name 不同)
+        new_params: 新参数字典 (已过滤 None)
+
+    Returns:
+        {"ok": True/False, "new_params_sha": ..., "manifest_path": ..., "error": ...}
+    """
+    try:
+        # 1. 算新 params blob 的 sha256
+        params_bytes = json.dumps(new_params, ensure_ascii=False).encode("utf-8")
+        new_params_sha = hashlib.sha256(params_bytes).hexdigest()
+        # 2. 写新 blob (如果不存在)
+        blobs_dir = Path(OLLAMA_MODELS_DIR) / "blobs"
+        new_blob_path = blobs_dir / f"sha256-{new_params_sha}"
+        if not new_blob_path.exists():
+            new_blob_path.write_bytes(params_bytes)
+        # 3. 改 manifest 文件
+        new_manifest_path = _manifest_path_for_model(new_tag)
+        if not new_manifest_path.exists():
+            # v1.9.0: 目标 manifest 不存在 → 从原 model_name 复制 model+config+license layers 创建一个
+            # 原 manifest 本身保留不变 (原 tag 还在 ollama list 里)
+            try:
+                src_manifest_path = _manifest_path_for_model(model_name)
+                if not src_manifest_path.exists():
+                    return {"ok": False, "error": f"源 manifest 不存在: {src_manifest_path} (model {model_name} 未注册)"}
+                with open(src_manifest_path, "r") as f:
+                    src_manifest = json.load(f)
+                # 复用 schemaVersion / mediaType / config, 只拷 model + license layers (params 后面重写)
+                manifest = {
+                    "schemaVersion": src_manifest.get("schemaVersion", 2),
+                    "mediaType": src_manifest.get("mediaType", "application/vnd.docker.distribution.manifest.v2+json"),
+                    "config": src_manifest.get("config"),
+                    "layers": [dict(l) for l in src_manifest.get("layers", [])
+                               if "model" in l.get("mediaType", "") or "license" in l.get("mediaType", "")],
+                }
+                new_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(new_manifest_path, "w") as f:
+                    json.dump(manifest, f, separators=(",", ":"))
+                log.info(f"从 {model_name} 复制 model/config/license 到新 manifest: {new_manifest_path}")
+            except Exception as e:
+                return {"ok": False, "error": f"创建目标 manifest 失败: {e}"}
+        else:
+            with open(new_manifest_path, "r") as f:
+                manifest = json.load(f)
+        # 4. 找出旧 params layer (用于可能删除旧 blob)
+        old_params_sha = None
+        for layer in manifest.get("layers", []):
+            if "params" in layer.get("mediaType", ""):
+                old_params_sha = layer.get("digest", "").replace("sha256:", "")
+                layer["digest"] = f"sha256:{new_params_sha}"
+                layer["size"] = len(params_bytes)
+                break
+        else:
+            # manifest 里没有 params layer → 加一个
+            manifest["layers"].append({
+                "mediaType": "application/vnd.ollama.image.params",
+                "digest": f"sha256:{new_params_sha}",
+                "size": len(params_bytes),
+            })
+        # 5. 写新 manifest (中间不加 indent, 跟 ollama create 产出保持一致)
+        with open(new_manifest_path, "w") as f:
+            json.dump(manifest, f, separators=(",", ":"))
+        # 6. 清理旧 params blob (如果旧 sha != 新 sha, 且旧 blob 不再被任何 manifest 引用)
+        if old_params_sha and old_params_sha != new_params_sha:
+            try:
+                old_blob = blobs_dir / f"sha256-{old_params_sha}"
+                # 检查是否有其他 manifest 还引用旧 sha
+                still_referenced = False
+                manifests_root = Path(OLLAMA_MODELS_DIR) / "manifests"
+                if manifests_root.exists():
+                    for mf in manifests_root.rglob("*"):
+                        if not mf.is_file() or mf == new_manifest_path:
+                            continue
+                        try:
+                            m = json.loads(mf.read_text())
+                            for layer in m.get("layers", []):
+                                if layer.get("digest", "").replace("sha256:", "") == old_params_sha:
+                                    still_referenced = True
+                                    break
+                            cfg = m.get("config", {}).get("digest", "").replace("sha256:", "")
+                            if cfg == old_params_sha:
+                                still_referenced = True
+                            if still_referenced:
+                                break
+                        except Exception:
+                            continue
+                if not still_referenced and old_blob.exists():
+                    old_blob.unlink()
+                    log.info(f"删旧 params blob: sha256-{old_params_sha[:12]}")
+            except Exception as e:
+                log.warning(f"清理旧 params blob 失败: {e}")
+        return {
+            "ok": True,
+            "new_params_sha": new_params_sha,
+            "manifest_path": str(new_manifest_path),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _remove_other_tags_for_base(base_name, keep_tag):
+    """v1.9.0: 清理同 base_name 下其他 tag, 只保留 keep_tag
+    返回: 被删的 tag 名列表
+    走 ollama 二进制 (ollama rm <tag>), 走 manifest 文件两路都试:
+      - 先扫 ollama list 拿到所有同 base 的 tag
+      - 跳过 keep_tag, 其余 ollama rm
+      - 同时删 manifest 文件 (.orphaned_clean)
+    """
+    removed = []
+    try:
+        # 1. 走 ollama /api/tags 拿当前列表
+        import urllib.request
+        tags_resp = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=5)
+        tags_data = json.loads(tags_resp.read())
+        all_tags = [m.get("name", "") for m in tags_data.get("models", [])]
+        # 2. 过滤同 base 的 tag (前缀 base_name + ":")
+        prefix = base_name + ":"
+        same_base = [t for t in all_tags if t.startswith(prefix)]
+        # 3. 跳过 keep_tag, 其余 ollama rm
+        for t in same_base:
+            if t == keep_tag:
+                continue
+            try:
+                rm_proc = subprocess.run(
+                    ["/home/wangyc/.local/bin/ollama", "rm", t],
+                    capture_output=True, text=True, timeout=30
+                )
+                if rm_proc.returncode == 0:
+                    removed.append(t)
+                    log.info(f"ollama rm {t} 成功")
+                else:
+                    log.warning(f"ollama rm {t} 失败: {rm_proc.stderr.strip() or rm_proc.stdout.strip()}")
+            except subprocess.TimeoutExpired:
+                log.warning(f"ollama rm {t} 超时")
+            except Exception as e:
+                log.warning(f"ollama rm {t} 异常: {e}")
+        # 4. 清 manifest 文件中同 base 下的其他 manifest (防止下次 ingest 拿旧列表)
+        # 只在 ollama list 已经反映删除后才清, 避免有未同步的状态
+        if removed:
+            try:
+                base_manifest_dir = Path(OLLAMA_MODELS_DIR) / "manifests" / "registry.ollama.ai" / "library" / base_name
+                if base_manifest_dir.exists():
+                    keep_suffix = keep_tag.split(":", 1)[1] if ":" in keep_tag else ""
+                    for mf in base_manifest_dir.iterdir():
+                        if not mf.is_file():
+                            continue
+                        if mf.name == keep_suffix:
+                            continue
+                        # 只清属于这次修改模型 (同一 model 层 sha 一致) 的 manifest
+                        # 避免误删其他实例
+                        try:
+                            m = json.loads(mf.read_text())
+                            same_model_layer = any(
+                                layer.get("digest") == _get_model_layer_digest_for_tag(keep_tag)
+                                for layer in m.get("layers", [])
+                                if "model" in layer.get("mediaType", "")
+                            )
+                            if same_model_layer:
+                                mf.unlink()
+                                log.info(f"删 manifest: {mf}")
+                        except Exception:
+                            continue
+            except Exception as e:
+                log.warning(f"清旧 manifest 文件失败: {e}")
+    except Exception as e:
+        log.warning(f"_remove_other_tags_for_base 异常: {e}")
+    return removed
+
+
+def _get_model_layer_digest_for_tag(tag_name):
+    """从某 tag 的 manifest 里拿 model layer 的 digest (sha256:xxx)
+    用于判断两个 manifest 是否同一权重文件
+    """
+    try:
+        manifest_path = _manifest_path_for_model(tag_name)
+        if not manifest_path.exists():
+            return None
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+        for layer in manifest.get("layers", []):
+            if "model" in layer.get("mediaType", ""):
+                return layer.get("digest")
+        return None
+    except Exception:
+        return None
+
+
 def _tag_from_model_name(model_name):
     """model_name → tag name (e.g. qwen3.6-q3 + num_ctx=131072 → qwen3.6-q3:ctx128k)
     规则: ctx round 到 K → 8k/16k/32k/64k/128k/256k
@@ -2590,44 +2837,46 @@ def api_set_ollama_forwarding():
 
 
 # ── Ollama per-model Modelfile API (v1.1.8-patch2 新增) ─────────────────
-# 读: 从 Modelfile 读参数
-# 写: 写 Modelfile → ollama create 重建 tag (如 qwen3.6-q3:ctx128k)
+# 读: 从 params blob 读 (反映真实生效值)
+# 写: 直接重写 params blob + 改 manifest layer digest, 不走 Modelfile/ollama create
 # 注意: num_ctx 改变会生成新 tag (e.g. ctx64k→ctx128k), 旧 tag 保留不删
+# v1.9.0: 重写为直接改 manifests (用户要求: 不复杂化, 不引入 Modelfile 中间层)
 
 @app.route("/api/ollama_model_params", methods=["GET"])
 def api_get_ollama_model_params():
-    """获取指定 ollama 模型的 Modelfile 参数
+    """获取指定 ollama 模型的 params (从 params blob 读, 反映真实生效值)
     query: ?model=xxx (默认 current_model)
     """
     model = request.args.get("model") or current_model
     if not model:
         return jsonify({"error": "未指定 model"}), 400
-    mf_path = _modelfile_path_for(model)
-    parsed = _parse_modelfile(mf_path)
+    parsed = _read_ollama_params_from_blob(model)
     if parsed is None:
         return jsonify({
             "model": model,
-            "modelfile_path": mf_path,
             "exists": False,
             "params": {f: None for f in _OLLAMA_MODEL_PARAM_FIELDS},
-            "from": None,
-        })
+        }), 404
     return jsonify({
         "model": model,
-        "modelfile_path": mf_path,
         "exists": True,
         "params": {f: parsed.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
-        "from": parsed.get("from"),
     })
 
 
 @app.route("/api/ollama_model_params", methods=["POST"])
 def api_set_ollama_model_params():
     global current_model, current_framework  # v1.1.13
-    """保存 ollama per-model 参数 -> 写 Modelfile -> ollama create 重建 tag
+    """保存 ollama per-model 参数 -> 直接改 params blob + manifest layer digest
     body: {model, num_ctx, temperature, top_p, top_k, repeat_penalty}
     - num_ctx 必填，改变会创建新 tag (e.g. ctx128k->ctx256k)
-    - 其他字段可省略 (保留原值) 或 传 null/0 (从 Modelfile 删除)
+    - 其他字段可省略 (保留未指定) 或 传 null/0 (从 params 删)
+    v1.9.0: 不写 Modelfile, 不调 ollama create; 直接:
+      1. 读现有 params blob 拿未指定字段的保留值 (含 stop)
+      2. 重算 params JSON → sha256
+      3. 写新 params blob
+      4. 改 manifest 文件的 params layer (digest + size)
+      5. 返回成功 (含新旧 params sha 对比)
     """
     if current_framework != "ollama":
         return jsonify({"error": "当前不是 Ollama 框架"}), 400
@@ -2644,10 +2893,6 @@ def api_set_ollama_model_params():
         return jsonify({"error": "num_ctx 必须是整数"}), 400
     if num_ctx < 512 or num_ctx > 1048576:
         return jsonify({"error": "num_ctx 范围 512-1048576"}), 400
-    # 读现有参数 (用于保留未指定的字段)
-    mf_path = _modelfile_path_for(model)
-    existing = _parse_modelfile(mf_path) or {f: None for f in _OLLAMA_MODEL_PARAM_FIELDS}
-    existing["from"] = existing.get("from") or model.split(":")[0] + ":latest"
     # 验证其他字段
     for f in ("temperature", "top_p", "top_k", "repeat_penalty"):
         if f in data and data[f] is not None and data[f] != "":
@@ -2655,34 +2900,45 @@ def api_set_ollama_model_params():
                 data[f] = float(data[f])
             except (TypeError, ValueError):
                 return jsonify({"error": f"{f} 必须是数字"}), 400
-    # 更新参数
-    new_params = dict(existing)
+    base_name = model.split(":")[0]
+    new_tag = _make_ollama_tag(base_name, num_ctx)
+    # v1.9.0: 读现有 params blob 拿保留值 (含 stop 等)
+    existing_params = _read_ollama_params_from_blob(model) or {}
+    # 组装新 params (保留 stop 等未在 _OLLAMA_MODEL_PARAM_FIELDS 里的字段)
+    new_params = dict(existing_params)
     new_params["num_ctx"] = num_ctx
     for f in ("temperature", "top_p", "top_k", "repeat_penalty"):
         if f in data:
             new_params[f] = data[f] if data[f] != "" and data[f] != 0 else None
-    # 写 Modelfile
-    base_name = model.split(":")[0]
-    new_params["from"] = existing["from"]  # 保持 FROM 指向
-    header = [
-        f"模型 {model} 参数配置 (framework-manager v1.1.8-patch2)",
-        f"FROM: {new_params['from']}",
-        f"num_ctx: {new_params['num_ctx']} → tag: {_make_ollama_tag(base_name, num_ctx)}",
-    ]
-    if not _write_modelfile(mf_path, new_params, header_lines=header):
-        return jsonify({"error": "写 Modelfile 失败"}), 500
-    # ollama create 重建 tag
-    new_tag = _make_ollama_tag(base_name, num_ctx)
-    ok, msg = _create_ollama_tag_from_modelfile(mf_path, new_tag)
-    audit_log("保存 ollama 模型参数", f"model={model}, tag={new_tag}, ok={ok}", "ok" if ok else "fail")
-    if not ok:
+    # 清掉 None 值 (params blob 不写 None)
+    new_params = {k: v for k, v in new_params.items() if v is not None}
+    # 写新 params blob + 改 manifest
+    result = _write_ollama_params_blob_and_manifest(model, new_tag, new_params)
+    if not result["ok"]:
+        audit_log("保存 ollama 模型参数",
+                  f"model={model}, tag={new_tag}, error={result.get('error')}",
+                  "fail")
         return jsonify({
-            "status": "partial",
-            "warning": f"Modelfile 已写但 ollama create 失败: {msg}",
-            "modelfile": mf_path,
+            "status": "error",
+            "error": result.get("error"),
+            "model": model,
             "intended_tag": new_tag,
             "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
         }), 500
+    audit_log("保存 ollama 模型参数",
+              f"model={model}, tag={new_tag}, params_blob={result['new_params_sha'][:12]}, manifest={result['manifest_path']}",
+              "ok")
+    # v1.9.0: 同一 base_name 只保留一个新 tag (全删其他)
+    # 例: gemma4:26b-ctx64k 和 gemma4:ctx64k 共存 → 改完后仅保留 gemma4:ctx128k
+    removed_tags = []
+    try:
+        removed_tags = _remove_other_tags_for_base(base_name, keep_tag=new_tag)
+        if removed_tags:
+            audit_log("清理同 base 旧 tag",
+                      f"base={base_name}, kept={new_tag}, removed={removed_tags}",
+                      "ok")
+    except Exception as e:
+        log.warning(f"清理同 base 旧 tag 失败: {e}")
     # v1.1.13: 自动加载新 tag (如果当前框架是 ollama 且新 tag 存在)
     auto_loaded = False
     try:
@@ -2692,7 +2948,20 @@ def api_set_ollama_model_params():
         tags_data = json.loads(tags_resp.read())
         available_tags = [m.get("name", "") for m in tags_data.get("models", [])]
         if new_tag in available_tags:
-            # 通过 /api/generate 加载新 tag 到显存
+            # v1.9.0: 强制 unload + reload, 使新 params blob 生效
+            # (ollama 不会自动重读已加载模型的 params blob)
+            try:
+                unload_req = urllib.request.Request(
+                    "http://localhost:11434/api/generate",
+                    data=json.dumps({"model": new_tag, "keep_alive": 0}).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(unload_req, timeout=30)
+                log.info(f"unload {new_tag} (准备重新加载)")
+            except Exception as ue:
+                log.warning(f"unload {new_tag} 失败 (可能未加载): {ue}")
+            # 重新加载
             payload = json.dumps({
                 "model": new_tag,
                 "prompt": "",
@@ -2717,8 +2986,10 @@ def api_set_ollama_model_params():
     return jsonify({
         "status": "ok",
         "model": model,
-        "modelfile": mf_path,
+        "manifest": result["manifest_path"],
+        "params_blob_sha": result["new_params_sha"],
         "tag": new_tag,
+        "removed_tags": removed_tags if 'removed_tags' in dir() else [],
         "auto_loaded": auto_loaded,
         "params": {f: new_params.get(f) for f in _OLLAMA_MODEL_PARAM_FIELDS},
         "message": f"已保存 {model} 参数并重建 tag {new_tag}" + ("，已自动加载" if auto_loaded else "，请手动加载")
@@ -2875,7 +3146,7 @@ def api_ingest_beellama():
 
 @app.route("/api/restore_ollama_default_model_params", methods=["POST"])
 def api_restore_ollama_default_model_params():
-    """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 写 Modelfile → 重建 tag
+    """「🔄 恢复默认」按钮: 从 defaults.ollama 读该模型值 → 复用 api_set_ollama_model_params (v1.9.0)
     优先级: models[name] > _fallback (回退)
     v1.1.13: 修复 fallback 空 dict 时的处理 + num_ctx 默认值
     """
@@ -4206,16 +4477,16 @@ h1 small{font-size:0.85rem;color:var(--text-dim);font-weight:400}
 <h2>📦 Ollama 模型专属参数：<span id="ollama-model-params-name"></span></h2>
 <div id="ollama-model-params-overlay" class="processing-overlay" style="display:none;">
   <div class="spin"></div>
-  <span>正在保存 Modelfile 并重建 tag...</span>
+  <span>正在更新 params blob 和 manifest...</span>
 </div>
 <div class="form-row">
   <div class="form-group">
     <label>num_ctx (决定 tag 后缀, 必填)</label>
     <select id="ollama-num-ctx" style="min-width:150px;">
-      <option value="8192">8K (省显存)</option>
+      <option value="8192">8K</option>
       <option value="32768">32K</option>
       <option value="65536">64K</option>
-      <option value="65536" selected>64K ⭐推荐</option>
+      <option value="131072">128K</option>
       <option value="262144">256K</option>
     </select>
   </div>
@@ -4633,7 +4904,7 @@ loras: /home/wangyc/my_loras"></textarea>
 <div id="log-area">就绪。</div>
 </div>
 <div class="footer">
-<span>framework-manager v1.5.1 · :{{ port }}</span>
+<span>framework-manager v1.9.0 · :{{ port }}</span>
 <a href="/api/health" style="color:#484;text-decoration:none;font-size:0.65rem">/api/health</a>
 </div>
 </div>
@@ -4647,13 +4918,18 @@ var defaultsCache = { _fallback: {ctx_size:131072, parallel:2, ngpu_layers:99}, 
 async function fetchJSON(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  try {
-    const resp = await fetch(url, opts);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    return await resp.json();
-  } catch (e) {
-    throw e;
+  const resp = await fetch(url, opts);
+  // v1.9.0: 不管状态码都返回 body, 避免 "HTTP 500" 吞掉后端详情
+  let data;
+  try { data = await resp.json(); } catch { data = null; }
+  if (!resp.ok) {
+    const detail = (data && (data.error || data.warning || data.message)) || resp.statusText || ('HTTP ' + resp.status);
+    const err = new Error(detail);
+    err.status = resp.status;
+    err.body = data;
+    throw err;
   }
+  return data;
 }
 async function refresh() {
   try {
@@ -5651,6 +5927,12 @@ async function loadOllamaModelParams() {
   try {
     const data = await fetchJSON('/api/ollama_model_params?model=' + encodeURIComponent(currentModel));
     const p = data.params || {};
+    // v1.9.0: 只在 currentModel 变化时刷新表单, 避免覆盖用户输入
+    // 之前: 每次 refresh() 都重设, 用户输入 0.8 后 3-5s 被还原为后端原值
+    if (window._ollamaModelParamsLoadedFor === currentModel) {
+      return;  // 同 model, 不覆盖用户输入
+    }
+    window._ollamaModelParamsLoadedFor = currentModel;
     document.getElementById('ollama-num-ctx').value = p.num_ctx || 131072;
     document.getElementById('ollama-temperature').value = p.temperature ?? '';
     document.getElementById('ollama-top-p').value = p.top_p ?? '';
@@ -5680,9 +5962,10 @@ async function saveOllamaModelParams() {
     };
     const resp = await fetchJSON('/api/ollama_model_params', 'POST', payload);
     if (resp.status === 'ok') {
-      const autoMsg = resp.auto_loaded ? '✅ 已保存并自动加载新 tag' : '✅ 已保存，新 tag 已就绪';
+      const autoMsg = resp.auto_loaded ? '✅ 已保存并重新加载' : '✅ 已保存，新 tag 已就绪';
       showToast(autoMsg, 'success', 5000);
-      // 如果自动加载成功，刷新状态
+      // v1.9.0: 只要 params blob 变了, 就重新加载 (ollama 不会自动重读已加载的模型)
+      // 不管 tag 是否变 (同 tag 但 params 变也要 reload)
       if (resp.auto_loaded && resp.tag) {
         currentModel = resp.tag;  // 更新前端 currentModel
         await refresh();  // 刷新 UI
@@ -5703,7 +5986,7 @@ async function saveOllamaModelParams() {
 
 async function resetOllamaModelParams() {
   if (!currentModel) { showToast('未加载 ollama 模型', 'error'); return; }
-  if (!confirm('确定要将 "' + currentModel + '" 的 per-model 参数恢复为 ollama defaults 中设置的值吗？\n\n将自动写 Modelfile 并重建 tag。')) return;
+  if (!confirm('确定要将 "' + currentModel + '" 的 per-model 参数恢复为 ollama defaults 中设置的值吗？\n\n将直接更新 params blob 和 manifest。')) return;
   const overlay = document.getElementById('ollama-model-params-overlay');
   const btn = document.getElementById('btn-reset-ollama-model-params');
   btn.disabled = true;

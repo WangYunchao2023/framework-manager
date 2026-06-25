@@ -1,5 +1,67 @@
 # framework-manager 版本历史
 
+## v1.9.0 (2026-06-25)
+
+### 🔧 「📦 Ollama 模型专属参数」重写：直写 blob + manifest
+
+**背景**：
+- 原有路径走「写 Modelfile → ollama create → 重建 tag」中间层，错话复杂
+- 8:31 / 8:44 / 8:46 三次测试都由于 Modelfile fallback 到 `gemma4:latest` 失败
+- 后台无错误详情，前端只能看到 "HTTP 500" toast
+- 改完参数后 ollama 不会重读已加载模型的 params blob (只读一次)
+- 「全 base 一入口」需求：同一 model 权重只能保留一个 tag
+
+### 改动
+
+1. **POST /api/ollama_model_params 重写** (不写 Modelfile, 不调 ollama create)
+   - 读现有 params blob → 拿 stop 等保留字段
+   - 覆盖 UI 传的新参数 (num_ctx / temperature / top_p / top_k / repeat_penalty)
+   - 算新 params JSON sha256 → 写新 params blob
+   - 改 manifest 文件的 params layer (digest + size)
+   - 旧 params blob 清理 (未被任何 manifest 引用)
+2. **目标 manifest 不存在时自动创建**
+   - 从原 model_name 复制 model + license layers
+   - 复用 schemaVersion / mediaType / config
+   - params layer 后面重写
+3. **同 base 自动删旧 tag** (`_remove_other_tags_for_base`)
+   - 改 num_ctx 后 `ollama rm` 同 base_name 下所有其他 tag
+   - 条件：只删 model layer digest 相同的 manifest (避免误删同 base 不同权重的特殊 tag)
+4. **强制 unload + reload** (新 params 生效)
+   - `keep_alive=0` 卸载 → `/api/generate keep_alive=-1` 重新加载
+5. **前端 fetchJSON 不吞 error body** (HTTP 500 也能看到后端详情)
+6. **前端 loadOllamaModelParams 加 currentModel 缓存** (用户输入不再被 refresh 覆盖)
+7. **num_ctx 下拉清理** (8K / 32K / 64K / 128K / 256K, 去掉重复 64K, 去掉 ⭐ 标注)
+8. **unload 脚本时间加长** (switch-inference.sh: max_wait 150 → 200)
+9. **beellama-wrapper.sh v1.0.8** (读 reasoning_off 真正生效，之前 --reasoning on 写死)
+
+### 不变
+
+- 「📋 新模型注册参数」仍只用于新模型注册 (v1.1.15 / v1.7.0 / v1.8.0 路径)
+- 「🎯 Ollama 默认值」 与 「📦 Ollama 模型专属参数」职责清晰分离
+- v1.8.0 16 族 stop tokens 注入逻辑不变
+
+### Diff
+
+- `framework-manager.py`: +333 / -54
+- `beellama-wrapper.sh`: +10 / -7
+- `switch-inference.sh`: +1 / -1
+- `VERSION.md`: +36 / -1
+- `framework-manager-audit.log`: 6 条 v1.9.0 操作记录
+
+### 测试覆盖
+
+| 场景 | 结果 |
+|------|------|
+| 改 temperature (同 ctx) → reload + 模型 ID 变 | ✅ |
+| 改 num_ctx 64K → 32K → 自动创建 manifest + 删旧 tag | ✅ |
+| 改 num_ctx 32K → 128K → 自动创建 manifest + 删旧 tag | ✅ |
+| 后端 HTTP 500 错误能透传到前端 toast | ✅ |
+| 用户输入 temperature 后不被 refresh() 覆盖 | ✅ |
+| ollama list 一模型一入口 (removed_tags 生效) | ✅ |
+| 8:44/8:46 silent fail 现在返清晰 error | ✅ |
+
+---
+
 ## v1.7.0 (2026-06-24)
 
 ### 🎯 新模型注册参数：新增 stop tokens 字段

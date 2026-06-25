@@ -7,9 +7,15 @@
 #
 # 如果文件不存在，使用默认模型（qwen3.6-q3，无 DFlash，TurboQuant 3bit）
 #
-# 版本：1.0.7
+# 版本：1.0.8
 #
 # 更新日志:
+# - v1.0.8: 读 reasoning_off 真正生效 (v1.8.1 修)
+#   - 之前 --reasoning on 写死, 调 UI 的 reasoning_off 完全无效
+#   - 现在读 framework_params.beellama.global.reasoning_off
+#   - true  → 不传 --reasoning, llama-server 不分离 thinking, 直接进 content
+#   - false → --reasoning on + --reasoning-format deepseek (分离到 reasoning_content)
+#   - 缺省值 true (合并), 与 UI 默认对齐
 # - v1.0.7: 全面删除模型 case + 兜底 (与 framework-manager.py v1.1.4 联动)
 #   - 删除 *qwen3-14b* / *gemma4* / *qwen3-vl* / *qwen3.6* 4 个 case
 #   - 删除 *) 兑底 case
@@ -149,9 +155,11 @@ echo "📦 [$MODEL_NAME_SHORT] ctx=$CTX_SIZE, parallel=$PARALLEL, ngl=$NGL (来�
 # mmproj 自动发现: 同目录下的 mmproj-*.gguf
 MM_PROJ=$(ls "$(dirname "$gguf_path")/mmproj-"*.gguf 2>/dev/null | head -1)
 
-# 全局参数: turbo_level / flash_attn (从 FM_CONFIG 的 global 读)
+# 全局参数: turbo_level / flash_attn / reasoning_off (从 FM_CONFIG 的 global 读)
 fm_turbo=$(python3 -c "import json; c=json.load(open('$FM_CONFIG')); print(c.get('framework_params',{}).get('beellama',{}).get('global',{}).get('turbo_level',''))" 2>/dev/null)
 fm_flash=$(python3 -c "import json; c=json.load(open('$FM_CONFIG')); print('on' if c.get('framework_params',{}).get('beellama',{}).get('global',{}).get('flash_attn',True) else 'off')" 2>/dev/null)
+# v1.0.8: 真正读 reasoning_off (之前写死 --reasoning on, UI 调了无效)
+fm_reasoning_off=$(python3 -c "import json; c=json.load(open('$FM_CONFIG')); v = c.get('framework_params',{}).get('beellama',{}).get('global',{}).get('reasoning_off'); print('true' if v is None or bool(v) else 'false')" 2>/dev/null)
 if [ -n "$fm_turbo" ]; then
   turbo_level="$fm_turbo"
   echo "📐 [全局] turbo_level=$turbo_level" >&2
@@ -160,6 +168,7 @@ if [ -n "$fm_flash" ]; then
   FLASH_ATTN="$fm_flash"
   echo "📐 [全局] flash_attn=$FLASH_ATTN" >&2
 fi
+echo "📐 [全局] reasoning_off=$fm_reasoning_off" >&2
 
 echo "📐 beellama: model=$MODEL_NAME, ctx=$CTX_SIZE, parallel=$PARALLEL, dflash=$dflash_enabled, turbo=$turbo_level" >&2
 
@@ -197,9 +206,9 @@ echo "🚀 启动参数：ctx=$CTX_SIZE, parallel=$PARALLEL, ngl=$NG_LAYERS, fla
   -ngl $NG_LAYERS \
   -c $CTX_SIZE \
   --parallel $PARALLEL \
+  --ctx-checkpoints 8 \
   --flash-attn $FLASH_MODE \
-  --reasoning on \
-  --reasoning-format deepseek \
+  $([ "$fm_reasoning_off" = "false" ] && echo "--reasoning on --reasoning-format deepseek" || true) \
   --cache-type-k q8_0 \
   --cache-type-v q8_0 \
   $dflash_args \
